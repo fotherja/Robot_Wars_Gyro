@@ -1,6 +1,13 @@
 /*
 To Do:
-Need to allow low voltage to work with gyro. ATM it would cause problems 
+Ok. 2 Big problems at the moment in which I need a fresh mind to fix.
+1) Any movement of the sticks seems to turn the LED off as if we're receiving invalid pulses...
+2) Sometime the Robot tries to turn the wrong way to reach the setpoint...
+
+
+We're going for a rate of turn approach. The steering stick will set the rate of turn and the robot will attempt to follow.
+stick local variables everywhere instead of globals!
+
 
 Keep track of angle rotated from startup reference. Will probs have to use 500 maybe 1000dps mode on IMU.
 There are many options on how to control the bot:
@@ -46,8 +53,8 @@ const int INVALID = 0;
 //--- Pin definitions: -----------------------------------------------------------
 const int LED = 0;                                                                // LED Pin. Although this is also the Rx pin
 
-const int FwdBckIn = 1;                                                           // This is PCINT17 (calls PCINT2_vect). Although this is also the Tx pin
-const int LfRghtIn = 3;                                                           // This is INT1
+const int LfRghtIn = 1;                                                           // This is PCINT17 (calls PCINT2_vect). Although this is also the Tx pin
+const int FwdBckIn = 3;                                                           // This is INT1
 
 const int MEnble = 8;                                                             // Left Motors
 const int MotorL = 9;                                                             // Right Motors
@@ -58,24 +65,16 @@ const int Vsense = A2;                                                          
 //--- Globals: -------------------------------------------------------------------
 volatile signed long FwdBckPulseWdth;
 volatile signed long LfRghtPulseWdth;
+signed long FwdBckPulseWdth_Safe;
+signed long LfRghtPulseWdth_Safe;
 
-volatile unsigned long Time_at_Rise_LR;
-volatile unsigned long Time_at_Rise_FB;
-volatile unsigned long Time_at_Motor_Update;
+float yaw, yaw_setpoint;
 
-int Lout;
-int Rout;
-
-int No_Signal;
-int debug_count;
-
-int LfRghtPulse, FwdBckPulse;
-
-float yaw;
 //--- Routines -------------------------------------------------------------------
-void Low_Battery(void);
+int Low_Battery(void);
 void setup_6050(void);
-void Error_loop(void);
+void PID_Routine(void);
+float Turn_Error(void);
 
 //--- Setup: ---------------------------------------------------------------------
 void setup() 
@@ -101,7 +100,7 @@ void setup()
   PCMSK2 = 0b00000010;                                                            // Allow interrupt only PCINT17
   PCICR = 0b00000100;                                                             // Enable Interrupt on PCI_2
     
-  Serial.begin(38400); 
+  //Serial.begin(38400); 
 
   pinMode(LED, OUTPUT); 
 }
@@ -112,44 +111,37 @@ void loop() {
     if (!dmpReady) 
       {
         while(1)  {
-          Update_Motors();          
+          if(!Low_Battery())  {
+            Update_Motors();         
+          } 
         }
       }
-
-    // wait for MPU interrupt or extra packet(s) available
-    while (!mpuInterrupt && fifoCount < packetSize) {           
-          Update_Motors();        
+    
+    while (!mpuInterrupt && fifoCount < packetSize) {                             // wait for MPU interrupt or extra packet(s) available          
+      if(!Low_Battery())  {
+        Update_Motors();         
+      }         
     }
-
-    // reset interrupt flag and get INT_STATUS byte
-    mpuInterrupt = false;
+    
+    mpuInterrupt = false;                                                         // reset interrupt flag and get INT_STATUS byte
     mpuIntStatus = mpu.getIntStatus();
-
-    // get current FIFO count
-    fifoCount = mpu.getFIFOCount();
-
-    // check for overflow (this should never happen unless our code is too inefficient)
-    if ((mpuIntStatus & 0x10) || fifoCount == 1024) {
+    
+    fifoCount = mpu.getFIFOCount();                                               // get current FIFO count
+    
+    if ((mpuIntStatus & 0x10) || fifoCount == 1024) {                             // check for overflow (this should never happen unless our code is too inefficient)
         // reset so we can continue cleanly
         mpu.resetFIFO();        
-
-    // otherwise, check for DMP data ready interrupt (this should happen frequently)
-    } else if (mpuIntStatus & 0x02) {
-        // wait for correct available data length, should be a VERY short wait
-        while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
-
-        // read a packet from FIFO
-        mpu.getFIFOBytes(fifoBuffer, packetSize);
+    }    
+    else if (mpuIntStatus & 0x02) {                                               // otherwise, check for DMP data ready interrupt (this should happen frequently)        
+      while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();              // wait for correct available data length, should be a VERY short wait
+        mpu.getFIFOBytes(fifoBuffer, packetSize);                                 // read a packet from FIFO
         
-        // track FIFO count here in case there is > 1 packet available
-        // (this lets us immediately read more without waiting for an interrupt)
-        fifoCount -= packetSize;
+        fifoCount -= packetSize;                                                  // track FIFO count here in case there is > 1 packet available (this lets us immediately read more without waiting for an interrupt)
         
-        // display Euler angles in degrees
-        mpu.dmpGetQuaternion(&q, fifoBuffer);
+        mpu.dmpGetQuaternion(&q, fifoBuffer);                                     // display Euler angles in degrees
         mpu.dmpGetGravity(&gravity, &q);
         mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);        
-        yaw = (ypr[0] * 180/M_PI);             
+        yaw = (ypr[0] * 180/M_PI) + 180.0;                                        // Yaw given as a value between 0-360             
     }
 }
 
@@ -159,142 +151,213 @@ void loop() {
 void Update_Motors() 
 {  
 // A few things about this routine:
-//  1) It's run every ~40ms
-//  2) It Monitors Battery voltage and shutsdown motors if it falls below a threshold voltage
-//  3) It validates PWM data on Ch1 & Ch2 and set PWM outputs to motors accordingly - 
-//  4) Turns LED on to indiciate circuit is receiving valid PWM from receiver     
+//  1) It's run every 40ms
+//  2) It validates PWM data on Ch1 & Ch2 and sets PWM outputs to motors accordingly 
+//  3) Turns LED on to indiciate circuit is receiving valid PWM from receiver     
 
   // 1) -----
-  if(millis() - Time_at_Motor_Update < 40)
-  {
+  static int No_Signal = 0;
+  static int LfRghtPulse;
+  static int FwdBckPulse;
+  static unsigned long Time_at_Motor_Update = 0;
+  
+  if(millis() - Time_at_Motor_Update < 40) { 
     return;
   }
   
-  Time_at_Motor_Update = millis();
-  
-  // 2) -----
-  float BVoltage = analogRead(Vsense) * VOLTAGE_SENSE_CONSTANT; //Convert to millivolts
-  if(BVoltage < BATTERY_THRESHOLD_LOW)
-    {
-      Low_Battery();
-    }
+  Time_at_Motor_Update = millis(); 
 
-  // 3) -----
-  if((FwdBckPulseWdth >= 900) && (FwdBckPulseWdth <= 2100))                       // If we have a pulse within valid range
-    {
-      FwdBckPulseWdth = FwdBckPulseWdth - 1500;
-      FwdBckPulseWdth = FwdBckPulseWdth / 2;
+
+  // 2) -----
+  if((FwdBckPulseWdth >= 900) && (FwdBckPulseWdth <= 2100)) {                     // If we have a pulse within valid range
+      FwdBckPulseWdth_Safe = FwdBckPulseWdth - 1500;
+      FwdBckPulseWdth = 0;                                                        // If no new values are received this ensures we don't keep using old PWM data
+      
+      FwdBckPulseWdth_Safe = FwdBckPulseWdth_Safe / 4;
       FwdBckPulse = VALID;                  
     }
-  else
-    {
+  else  {  
       FwdBckPulse = INVALID;
       No_Signal++;        
     }
   
-  if((LfRghtPulseWdth >= 900) && (LfRghtPulseWdth <= 2100))                       // If we have a pulse within valid range
-    {
-      LfRghtPulseWdth = LfRghtPulseWdth - 1500;
-      LfRghtPulseWdth = LfRghtPulseWdth / 4;     
+  if((LfRghtPulseWdth >= 900) && (LfRghtPulseWdth <= 2100)) {                     // If we have a pulse within valid range
+      LfRghtPulseWdth_Safe = LfRghtPulseWdth - 1500;
+      LfRghtPulseWdth = 0;
+      
+      yaw_setpoint += (((float)LfRghtPulseWdth_Safe) * 0.05);                     // Scaling so full stick (+500us) gives 500 degrees per second rate of turn
+      LfRghtPulseWdth_Safe = LfRghtPulseWdth_Safe / 4;     
       LfRghtPulse = VALID;   
     }
-  else
-    {
+  else  {
       LfRghtPulse = INVALID;
       No_Signal++;
+    }                                                             
+       
+
+  if(yaw_setpoint >= 360.0) {                                                     // Keep yaw_setpoint within 0-360 limits
+      yaw_setpoint -= 360.0;
     }
+  else if(yaw_setpoint < 0.0) {
+      yaw_setpoint += 360.0;
+    }      
 
-  if(FwdBckPulse && LfRghtPulse)                                                  // If we've just received 2 valid pulses, update motors
-    {
-      digitalWrite(MEnble, HIGH);                                                 // Ensure outputs are enabled
-      Lout = constrain(128 + FwdBckPulseWdth + LfRghtPulseWdth, 0, 255);          // Left
-      Rout = constrain(128 + FwdBckPulseWdth - LfRghtPulseWdth, 0, 255);          // Right 
-      OCR1A = Lout;
-      OCR1B = Rout;  
-   
+  if(FwdBckPulse && LfRghtPulse)  {                                               // If we've just received 2 valid pulses, run the PID routine  
+      PID_Routine();   
       No_Signal = 0;  
-    }    
-    
-  FwdBckPulseWdth = 0;
-  LfRghtPulseWdth = 0;    
+    }      
+   
 
-  // 4) -----
-  if(No_Signal > 10)
-  {     
+  // 3) -----
+  if(No_Signal > 10)  {     
     digitalWrite(LED, LOW);                                                       // Turn LED off if no signal is being received
     digitalWrite(MEnble, LOW);                                                    // Disable outputs  
            
     OCR1A = 128;
     OCR1B = 128; 
   } 
-  else
-  {
+  else  {
     digitalWrite(LED, HIGH);                                                      // Turn LED on to indicate signal being received   
   }
 }
 
 //--------------------------------------------------------------------------------
-void Error_loop()
+void PID_Routine()
 {
-  while(1)
-  {
-    //Using LED indicate the various errors here...
-  }
+// So we need LfRghtPulseWdth to adjust itself according to how much error there is. Lets try proportional control first.
+  float Error;
+  const float Kp = 2.0;    
+ 
+  Error = Turn_Error() * Kp;
+  //LfRghtPulseWdth_Safe = round(Error);  
+
+  int Lout;
+  int Rout;
+  digitalWrite(MEnble, HIGH);                                                     // Ensure outputs are enabled
+  Lout = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 75, 180);         
+  Rout = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 75, 180);         
+  OCR1A = Lout;
+  OCR1B = Rout;  
 }
 
 //--------------------------------------------------------------------------------
-void Low_Battery()
+float Turn_Error()
 {
-  digitalWrite(MEnble, LOW);                                                      //Disable all outputs
-  while(1)
-  {
-    digitalWrite(LED, !digitalRead(LED));                                         // Flash LED
-    delay(100);
+// This routine calculates the angular error to the setpoint. It returns (+ve) for clockwise or (-ve) for anticlockwise directions
+
+  float difference = yaw_setpoint - yaw;
+  float Error; 
+  
+  difference = abs(difference);
+
+  if(yaw_setpoint >= 180.0 && yaw >= 180.0)
+    {
+      if(yaw_setpoint > yaw) {
+        Error = yaw_setpoint - yaw;
+        return Error;
+      }
+      else {
+        Error = yaw - yaw_setpoint;
+        return -Error;
+      } 
+    }
     
-    float BVoltage = analogRead(Vsense) * VOLTAGE_SENSE_CONSTANT;                 //Convert to millivolts
-    if(BVoltage > BATTERY_THRESHOLD_HGH)
-      {
-        digitalWrite(MEnble, HIGH);                                               //Enable all outputs
-        loop();
+  else if(yaw_setpoint >= 180.0 && yaw < 180.0)
+  {
+      if(difference < 180.0) {
+        Error = yaw_setpoint - yaw;
+        return Error;
+      }
+      else {
+        Error = 360.0 - yaw_setpoint + yaw;
+        return -Error;
+      }    
+  } 
+    
+  else if(yaw_setpoint < 180.0 && yaw < 180.0)
+  {
+      if(yaw_setpoint > yaw) {
+        Error = yaw_setpoint - yaw;
+        return -Error;
+      }
+      else {
+        Error = yaw - yaw_setpoint;
+        return Error; 
       }   
-  }
+  }  
+
+  else if(yaw_setpoint < 180.0 && yaw >= 180.0)
+  {
+      if(difference < 180.0) {
+        Error = yaw - yaw_setpoint;
+        return -Error;
+      }
+      else {
+        Error = 360 - yaw + yaw_setpoint;
+        return Error;
+      }    
+  }  
+}
+
+//--------------------------------------------------------------------------------
+int Low_Battery()
+{
+// Returns 0 if battery is sufficiently charged, 1 otherwise
+  
+  static unsigned long Time_at_LED_Change = 0;
+  static bool Low_Battery_Flag = 0;
+  
+  float BVoltage = analogRead(Vsense) * VOLTAGE_SENSE_CONSTANT;                   //Convert to millivolts
+  
+  if(BVoltage > BATTERY_THRESHOLD_LOW && !Low_Battery_Flag)
+    {
+      return(0);
+    }
+  if(BVoltage > BATTERY_THRESHOLD_HGH)
+    {
+      Low_Battery_Flag = 0;
+      return(0);
+    }
+
+  Low_Battery_Flag = 1;  
+  digitalWrite(MEnble, LOW);                                                      //Disable all outputs
+
+  if(millis() - Time_at_LED_Change > 100)
+  {
+    digitalWrite(LED, !digitalRead(LED));                                           // Flash LED
+    Time_at_LED_Change = millis();
+  }  
+  
+  return(1);  
 }
 
 //--------------------------------------------------------------------------------
 void setup_6050() {
-    // join I2C bus (I2Cdev library doesn't do this automatically)
+                                                                                  // join I2C bus (I2Cdev library doesn't do this automatically)
     #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
         Wire.begin();
-        TWBR = 24; // 400kHz I2C clock (200kHz if CPU is 8MHz). Comment this line if having compilation difficulties with TWBR.
+        TWBR = 24;                                                                // 400kHz I2C clock (200kHz if CPU is 8MHz). Comment this line if having compilation difficulties with TWBR.
     #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
         Fastwire::setup(400, true);
     #endif    
 
-    mpu.initialize();
-
-    // load and configure the DMP    
-    devStatus = mpu.dmpInitialize();
-
-    // supply your own gyro offsets here, scaled for min sensitivity
-    mpu.setXGyroOffset(220);
+    mpu.initialize();                                                                                     
+    devStatus = mpu.dmpInitialize();                                              // load and configure the DMP 
+    
+    mpu.setXGyroOffset(220);                                                      // supply your own gyro offsets here, scaled for min sensitivity
     mpu.setYGyroOffset(76);
     mpu.setZGyroOffset(-85);
-    mpu.setZAccelOffset(1788); // 1688 factory default for my test chip
+    mpu.setZAccelOffset(1788);                                                    // 1688 factory default for my test chip
 
-    // make sure it worked (returns 0 if so)
-    if (devStatus == 0) {
-        // turn on the DMP, now that it's ready        
-        mpu.setDMPEnabled(true);
-
-        // enable Arduino interrupt detection        
-        attachInterrupt(0, dmpDataReady, RISING);
+    if (devStatus == 0) {                                                         // make sure it worked (returns 0 if so)                
+        mpu.setDMPEnabled(true);                                                  // turn on the DMP, now that it's ready
+              
+        attachInterrupt(0, dmpDataReady, RISING);                                 // enable Arduino interrupt detection  
         mpuIntStatus = mpu.getIntStatus();
-
-        // set our DMP Ready flag so the main loop() function knows it's okay to use it        
-        dmpReady = true;
-
-        // get expected DMP packet size for later comparison
-        packetSize = mpu.dmpGetFIFOPacketSize();
+             
+        dmpReady = true;                                                          // set our DMP Ready flag so the main loop() function knows it's okay to use it
+       
+        packetSize = mpu.dmpGetFIFOPacketSize();                                  // get expected DMP packet size for later comparison
     } 
 }
 
@@ -303,6 +366,8 @@ void setup_6050() {
 //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
 ISR (PCINT2_vect)                                                                 // Change in FwdBckIn pin
 {
+  static unsigned long Time_at_Rise_FB = 0;
+  
   if (digitalRead(FwdBckIn) == HIGH)
     Time_at_Rise_FB = micros();
   else
@@ -314,6 +379,8 @@ ISR (PCINT2_vect)                                                               
 
 void ISR_LR ()                                                                    // Change in LfRghtIn Pin
 {
+  static unsigned long Time_at_Rise_LR = 0;
+  
   if (digitalRead(LfRghtIn) == HIGH)
     Time_at_Rise_LR = micros();
   else
@@ -324,6 +391,7 @@ void ISR_LR ()                                                                  
 void dmpDataReady() {
     mpuInterrupt = true;
 }
+
 
 
 
