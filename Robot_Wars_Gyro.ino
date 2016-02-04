@@ -44,7 +44,7 @@ volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin h
 
 //--- Defines: -------------------------------------------------------------------
 const float VOLTAGE_SENSE_CONSTANT = 24.71;
-const int BATTERY_THRESHOLD_LOW = 6600;                                           // If voltage falls below this, enter sleep
+const int BATTERY_THRESHOLD_LOW = 6400;                                           // If voltage falls below this, enter sleep
 const int BATTERY_THRESHOLD_HGH = 6800;                                           // If voltage rises above this, turn active again
 
 const int VALID = 1;
@@ -99,8 +99,6 @@ void setup()
   attachInterrupt (digitalPinToInterrupt(3), ISR_LR, CHANGE);                     // Attach interrupt handler
   PCMSK2 = 0b00000010;                                                            // Allow interrupt only PCINT17
   PCICR = 0b00000100;                                                             // Enable Interrupt on PCI_2
-    
-  //Serial.begin(38400); 
 
   pinMode(LED, OUTPUT); 
 }
@@ -141,7 +139,7 @@ void loop() {
         mpu.dmpGetQuaternion(&q, fifoBuffer);                                     // display Euler angles in degrees
         mpu.dmpGetGravity(&gravity, &q);
         mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);        
-        yaw = (ypr[0] * 180/M_PI) + 180.0;                                        // Yaw given as a value between 0-360             
+        yaw = (ypr[0] * 180.0/M_PI) + 180.0;                                      // Yaw given as a value between 0-360             
     }
 }
 
@@ -224,18 +222,30 @@ void Update_Motors()
 //--------------------------------------------------------------------------------
 void PID_Routine()
 {
-// So we need LfRghtPulseWdth to adjust itself according to how much error there is. Lets try proportional control first.
-  float Error;
-  const float Kp = 2.0;    
- 
-  Error = Turn_Error() * Kp;
-  //LfRghtPulseWdth_Safe = round(Error);  
+// So we need LfRghtPulseWdth to adjust itself according to how much error there is. Here's a little PI controller to try out.
+// Things to adjust:
+// Kp & Ki
+// The constraints
+// The sample rate
+
+  float Error, Output;
+  static float IError; 
+  const float Kp = 1.0;
+  const float Ki = 0.05;    
+  
+  Error = Turn_Error();
+  IError += (Error * Ki);
+  IError = constrain(IError, -50.0, 50.0);
+  Output = (Error * Kp) + IError;
+  
+  LfRghtPulseWdth_Safe = round(Output);
+  LfRghtPulseWdth_Safe = constrain(LfRghtPulseWdth_Safe, -100, 100);
 
   int Lout;
   int Rout;
   digitalWrite(MEnble, HIGH);                                                     // Ensure outputs are enabled
-  Lout = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 75, 180);         
-  Rout = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 75, 180);         
+  Lout = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
+  Rout = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
   OCR1A = Lout;
   OCR1B = Rout;  
 }
@@ -278,11 +288,11 @@ float Turn_Error()
   {
       if(yaw_setpoint > yaw) {
         Error = yaw_setpoint - yaw;
-        return -Error;
+        return Error;
       }
       else {
         Error = yaw - yaw_setpoint;
-        return Error; 
+        return -Error; 
       }   
   }  
 
@@ -302,7 +312,7 @@ float Turn_Error()
 //--------------------------------------------------------------------------------
 int Low_Battery()
 {
-// Returns 0 if battery is sufficiently charged, 1 otherwise
+// Returns 0 if battery is sufficiently charged, 1 otherwise. Looks complicated because it also has hysterisis and fast flashes the LED to indicate the problem
   
   static unsigned long Time_at_LED_Change = 0;
   static bool Low_Battery_Flag = 0;
@@ -324,7 +334,7 @@ int Low_Battery()
 
   if(millis() - Time_at_LED_Change > 100)
   {
-    digitalWrite(LED, !digitalRead(LED));                                           // Flash LED
+    digitalWrite(LED, !digitalRead(LED));                                         // Flash LED
     Time_at_LED_Change = millis();
   }  
   
@@ -343,7 +353,7 @@ void setup_6050() {
 
     mpu.initialize();                                                                                     
     devStatus = mpu.dmpInitialize();                                              // load and configure the DMP 
-    
+
     mpu.setXGyroOffset(220);                                                      // supply your own gyro offsets here, scaled for min sensitivity
     mpu.setYGyroOffset(76);
     mpu.setZGyroOffset(-85);
