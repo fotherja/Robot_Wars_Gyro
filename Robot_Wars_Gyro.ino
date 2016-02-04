@@ -53,13 +53,13 @@ const int INVALID = 0;
 //--- Pin definitions: -----------------------------------------------------------
 const int LED = 0;                                                                // LED Pin. Although this is also the Rx pin
 
-const int LfRghtIn = 1;                                                           // This is PCINT17 (calls PCINT2_vect). Although this is also the Tx pin
-const int FwdBckIn = 3;                                                           // This is INT1
+const int FwdBckIn = 1;                                                           // This is PCINT17 (calls PCINT2_vect). Although this is also the Tx pin
+const int LfRghtIn = 3;                                                           // This is INT1
 
-const int MEnble = 8;                                                             // Left Motors
-const int MotorL = 9;                                                             // Right Motors
+const int MEnble = 8;                                                             // Enable Motors
+const int MotorL = 9;                                                             // Left Motors
+const int MotorR = 10;                                                            // Right Motors
 
-const int MotorR = 10;                                                            // Enable Motors
 const int Vsense = A2;                                                            // Voltage sensing (150ohm to 1K dividor
 
 //--- Globals: -------------------------------------------------------------------
@@ -156,10 +156,10 @@ void Update_Motors()
 //  3) Turns LED on to indiciate circuit is receiving valid PWM from receiver     
 
   // 1) -----
-  static int No_Signal = 0;
+  static int No_Signal;
   static int LfRghtPulse;
   static int FwdBckPulse;
-  static unsigned long Time_at_Motor_Update = 0;
+  static unsigned long Time_at_Motor_Update;
   
   if(millis() - Time_at_Motor_Update < 40) { 
     return;
@@ -371,7 +371,7 @@ ISR (PCINT2_vect)                                                               
   if (digitalRead(FwdBckIn) == HIGH)
     Time_at_Rise_FB = micros();
   else
-    FwdBckPulseWdth = micros() - Time_at_Rise_FB; 
+    LfRghtPulseWdth = micros() - Time_at_Rise_FB;                                 // Yeah I know this is a bit confusing! Sorry. May change later? 
     
   PCIFR = 0b00000100;    // Apparently writing 1 clears the flag???
 } 
@@ -384,7 +384,7 @@ void ISR_LR ()                                                                  
   if (digitalRead(LfRghtIn) == HIGH)
     Time_at_Rise_LR = micros();
   else
-    LfRghtPulseWdth = micros() - Time_at_Rise_LR;        
+    FwdBckPulseWdth = micros() - Time_at_Rise_LR;                                 
 }
 
 
