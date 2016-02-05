@@ -43,8 +43,8 @@ volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin h
 
 //--- Defines: -------------------------------------------------------------------
 const float VOLTAGE_SENSE_CONSTANT = 24.71;
-const int BATTERY_THRESHOLD_LOW = 6400;                                           // If voltage falls below this, enter sleep
-const int BATTERY_THRESHOLD_HGH = 6800;                                           // If voltage rises above this, turn active again
+const int BATTERY_THRESHOLD_LOW = 6300;                                           // If voltage falls below this, enter sleep
+const int BATTERY_THRESHOLD_HGH = 7000;                                           // If voltage rises above this, turn active again
 const int NO_SIGNAL_THESHOLD = 10;                                                // Number of erronous PPM signals received before we deduce no signal is being received
 
 const int VALID = 1;
@@ -161,16 +161,20 @@ int Process_PPM()
 {  
 // A few things about this routine:
 //  1) It's run every 40ms
-//  2) It validates PWM data on Ch1 & Ch2 and sets PWM outputs to motors accordingly 
-//  3) Turns LED on to indiciate circuit is receiving valid PWM from receiver     
+//  2) It validates PPM data on Ch1 & Ch2 
+//  3) Turns LED on to indiciate circuit is receiving valid PPM from receiver     
+//  4) If Sticks are in their neutral position for > 1 second, set Yaw_Setpoint = Yaw & stop motors
 
   // 1) -----  
   static int LfRghtPulse;
   static int FwdBckPulse;
-  static unsigned long Time_at_Motor_Update;
+  static int Neutral_Input_Count = 25;
+  static unsigned long Time_at_Motor_Update; 
   
   if(millis() - Time_at_Motor_Update < 40) { 
-    if(No_Signal > NO_SIGNAL_THESHOLD)  {
+    if(No_Signal > NO_SIGNAL_THESHOLD || Neutral_Input_Count >= 25)  {
+      digitalWrite(MEnble, LOW);
+      Yaw_setpoint = Yaw;
       return(0);
     }
     else  {
@@ -216,8 +220,7 @@ int Process_PPM()
 
   if(FwdBckPulse && LfRghtPulse)  {                                               // If we've just received 2 valid pulses, clear the No_Signal count    
       No_Signal = 0;  
-    }      
-   
+    }  
 
   // 3) -----
   if(No_Signal > NO_SIGNAL_THESHOLD)  {     
@@ -227,11 +230,29 @@ int Process_PPM()
     OCR1A = 128;
     OCR1B = 128; 
     return(0);
-  } 
-  else  {
-    digitalWrite(LED, HIGH);                                                      // Turn LED on to indicate signal being received   
-    return(1);
+  }   
+
+  // 4) -----
+  if(abs(LfRghtPulseWdth_Safe) <= 10 && abs(FwdBckPulseWdth_Safe) <= 10) {        // If control sticks are in their neurtal position...
+    Neutral_Input_Count++;
+    
+    if(Neutral_Input_Count >= 25) {
+      Yaw_setpoint = Yaw;
+      digitalWrite(MEnble, LOW);
+      
+      if(Neutral_Input_Count % 15 == 0) {                                         // Slow flash LED to indicate the PID algorithm is suspended due to inactivity
+        digitalWrite(LED, !digitalRead(LED));      
+      }     
+       
+      return(0);                                                                  // Return with a zero to disable motor activity
+    }   
   }
+  else  {
+    Neutral_Input_Count = 0; 
+  }
+  
+  digitalWrite(LED, HIGH);                                                        // Turn LED on to indicate signal being received  
+  return(1);  
 }
 
 //--------------------------------------------------------------------------------
@@ -273,7 +294,7 @@ void PID_Routine()
   LfRghtPulseWdth_Safe = round(Output);
   LfRghtPulseWdth_Safe = constrain(LfRghtPulseWdth_Safe, -100, 100);
 
-  digitalWrite(MEnble, HIGH);                                                     // Ensure outputs are enabled
+  digitalWrite(MEnble, HIGH);                                                   // Ensure outputs are enabled
   int Lout = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
   int Rout = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
   OCR1A = Lout;
@@ -413,7 +434,7 @@ ISR (PCINT2_vect)                                                               
   else
     LfRghtPulseWdth = micros() - Time_at_Rise_FB;                                 // Yeah I know this is a bit confusing! Sorry. May change later? 
     
-  PCIFR = 0b00000100;    // Apparently writing 1 clears the flag???
+  PCIFR = 0b00000100;                                                             // Writing 1 clears the flag (Ridiciulous)
 } 
 
 
