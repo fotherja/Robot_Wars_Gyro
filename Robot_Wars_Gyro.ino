@@ -1,7 +1,7 @@
 /*
 To Do:
-1) Strange jerky movements. Especially when trying to go in fast circles. Instead you get a kinda hexagon movement. Maybe need PID rather than PI control
-2) If DMP6050 not connected - still work
+1) Perhaps include some method to allow for PID tuning on the fly...?
+2) Perhaps detect if robot is not on the floor and temporaily disable PID control if so
 
 
 A) Rename routines to something proper
@@ -45,12 +45,12 @@ volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin h
 const float VOLTAGE_SENSE_CONSTANT = 24.71;
 const int BATTERY_THRESHOLD_LOW = 6400;                                           // If voltage falls below this, enter sleep
 const int BATTERY_THRESHOLD_HGH = 6800;                                           // If voltage rises above this, turn active again
-const int NO_SIGNAL_THESHOLD = 10;
+const int NO_SIGNAL_THESHOLD = 10;                                                // Number of erronous PPM signals received before we deduce no signal is being received
 
 const int VALID = 1;
 const int INVALID = 0;
 
-static int No_Signal = NO_SIGNAL_THESHOLD;                                        // Assume no signal at the beginning
+static int No_Signal = NO_SIGNAL_THESHOLD;                                        // Assume no signal at startup
  
 //--- Pin definitions: -----------------------------------------------------------
 const int LED = 0;                                                                // LED Pin. Although this is also the Rx pin
@@ -62,22 +62,23 @@ const int MEnble = 8;                                                           
 const int MotorL = 9;                                                             // Left Motors
 const int MotorR = 10;                                                            // Right Motors
 
-const int Vsense = A2;                                                            // Voltage sensing (150ohm to 1K dividor
+const int Vsense = A2;                                                            // Voltage sensing (150ohm to 1K divider)
 
 //--- Globals: -------------------------------------------------------------------
-volatile signed long FwdBckPulseWdth;
+volatile signed long FwdBckPulseWdth;                                             // The interrupt routines continously update these whenever a new PPM signal is received (hence volatile!)
 volatile signed long LfRghtPulseWdth;
-signed long FwdBckPulseWdth_Safe;
+
+signed long FwdBckPulseWdth_Safe;                                                 // The Process_PPM routine saves the volatile versions above to these safe copies for later modification and use  
 signed long LfRghtPulseWdth_Safe;
 
-float yaw, yaw_setpoint;
+float Yaw, Yaw_setpoint;                                                          // The measured Yaw and the desired Yaw provided by the user's stick movements (respectively)
 
 //--- Routines -------------------------------------------------------------------
-int Low_Battery(void);
-void setup_6050(void);
-void PID_Routine(void);
-float Turn_Error(void);
-int Process_PPM(void);
+int Low_Battery(void);                                                            // Returns 0 if battery is sufficiently charged, 1 otherwise. Includes hysterisis & LED flashing for low battery (Non-blocking)
+void setup_6050(void);                                                            // Initialises the DMP6050
+void PID_Routine(void);                                                           // Iterates PID algorithm if enough time has passed since last call and updates the PWM signals to the motors
+float Turn_Error(void);                                                           // From the Yaw & Yaw_setpoint, this routine returns how many degrees we are from where we want to be. 
+int Process_PPM(void);                                                            // Validates and processes PPM signals received by the interrupt routines. Updates Yaw_setpoint. Returns 0 if no PPM signal. 
 
 //--- Setup: ---------------------------------------------------------------------
 void setup() 
@@ -111,12 +112,19 @@ void loop() {
     // If DMP initialisation failed just run without gyro control
     if (!dmpReady)  {
       while(1)  {
-        if(!Low_Battery())  {
-          Process_PPM();    //##############THIS BIT IS INCORRECT BUT ONLY RUNS IF DMP6050 ISN'T WORKING...        
+        if(!Low_Battery())  {                                                     // If the battery isn't flat...
+          if(Process_PPM() == VALID) {                                            // If we're recieving valid PPM data... 
+            
+            digitalWrite(MEnble, HIGH);                                           // Ensure outputs are enabled and go on to update them
+            int Lout = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
+            int Rout = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
+            OCR1A = Lout;
+            OCR1B = Rout;
+          }          
         } 
       }
     }
-    
+
     while (!mpuInterrupt && fifoCount < packetSize) {                             // wait for MPU interrupt or extra packet(s) available          
       if(!Low_Battery())  {        
         if(Process_PPM() == VALID) {                                              // Process_PPM() returns 1 if valid PPM data is being received 
@@ -142,7 +150,7 @@ void loop() {
         mpu.dmpGetQuaternion(&q, fifoBuffer);                                     // display Euler angles in degrees
         mpu.dmpGetGravity(&gravity, &q);
         mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);        
-        yaw = (ypr[0] * 180.0/M_PI) + 180.0;                                      // Yaw given as a value between 0-360             
+        Yaw = (ypr[0] * 180.0/M_PI) + 180.0;                                      // Yaw given as a value between 0-360             
     }
 }
 
@@ -189,7 +197,7 @@ int Process_PPM()
       LfRghtPulseWdth_Safe = LfRghtPulseWdth - 1500;
       LfRghtPulseWdth = 0;
       
-      yaw_setpoint += (((float)LfRghtPulseWdth_Safe) * 0.05);                     // Scaling so full stick (+500us) gives 500 degrees per second rate of turn
+      Yaw_setpoint += (((float)LfRghtPulseWdth_Safe) * 0.05);                     // Scaling so full stick (+500us) gives 500 degrees per second rate of turn
       LfRghtPulseWdth_Safe = LfRghtPulseWdth_Safe / 2;     
       LfRghtPulse = VALID;   
     }
@@ -199,11 +207,11 @@ int Process_PPM()
     }                                                             
        
 
-  if(yaw_setpoint >= 360.0) {                                                     // Keep yaw_setpoint within 0-360 limits
-      yaw_setpoint -= 360.0;
+  if(Yaw_setpoint >= 360.0) {                                                     // Keep Yaw_setpoint within 0-360 limits
+      Yaw_setpoint -= 360.0;
     }
-  else if(yaw_setpoint < 0.0) {
-      yaw_setpoint += 360.0;
+  else if(Yaw_setpoint < 0.0) {
+      Yaw_setpoint += 360.0;
     }      
 
   if(FwdBckPulse && LfRghtPulse)  {                                               // If we've just received 2 valid pulses, clear the No_Signal count    
@@ -257,8 +265,8 @@ void PID_Routine()
   ErrorSum += (Error * Ki) * delta_t;                                             // delta_t ~= 5000                                                       
   ErrorSum = constrain(ErrorSum, -100.0, 100.0);
 
-  dInput = (yaw - LastYaw) / delta_t;
-  LastYaw = yaw;
+  dInput = (Yaw - LastYaw) / delta_t;
+  LastYaw = Yaw;
   
   Output = (Error * Kp) + ErrorSum - (dInput * Kd);
   
@@ -277,55 +285,55 @@ float Turn_Error()
 {
 // This routine calculates the angular error to the setpoint. It returns (+ve) for clockwise or (-ve) for anticlockwise directions
 
-  float difference = yaw_setpoint - yaw;
+  float difference = Yaw_setpoint - Yaw;
   float Error; 
   
   difference = abs(difference);
 
-  if(yaw_setpoint >= 180.0 && yaw >= 180.0)
+  if(Yaw_setpoint >= 180.0 && Yaw >= 180.0)
     {
-      if(yaw_setpoint > yaw) {
-        Error = yaw_setpoint - yaw;
+      if(Yaw_setpoint > Yaw) {
+        Error = Yaw_setpoint - Yaw;
         return Error;
       }
       else {
-        Error = yaw - yaw_setpoint;
+        Error = Yaw - Yaw_setpoint;
         return -Error;
       } 
     }
     
-  else if(yaw_setpoint >= 180.0 && yaw < 180.0)
+  else if(Yaw_setpoint >= 180.0 && Yaw < 180.0)
   {
       if(difference < 180.0) {
-        Error = yaw_setpoint - yaw;
+        Error = Yaw_setpoint - Yaw;
         return Error;
       }
       else {
-        Error = 360.0 - yaw_setpoint + yaw;
+        Error = 360.0 - Yaw_setpoint + Yaw;
         return -Error;
       }    
   } 
     
-  else if(yaw_setpoint < 180.0 && yaw < 180.0)
+  else if(Yaw_setpoint < 180.0 && Yaw < 180.0)
   {
-      if(yaw_setpoint > yaw) {
-        Error = yaw_setpoint - yaw;
+      if(Yaw_setpoint > Yaw) {
+        Error = Yaw_setpoint - Yaw;
         return Error;
       }
       else {
-        Error = yaw - yaw_setpoint;
+        Error = Yaw - Yaw_setpoint;
         return -Error; 
       }   
   }  
 
-  else if(yaw_setpoint < 180.0 && yaw >= 180.0)
+  else if(Yaw_setpoint < 180.0 && Yaw >= 180.0)
   {
       if(difference < 180.0) {
-        Error = yaw - yaw_setpoint;
+        Error = Yaw - Yaw_setpoint;
         return -Error;
       }
       else {
-        Error = 360 - yaw + yaw_setpoint;
+        Error = 360 - Yaw + Yaw_setpoint;
         return Error;
       }    
   }  
