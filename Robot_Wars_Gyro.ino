@@ -1,20 +1,19 @@
 /*
 To Do:
-Ok. 2 Big problems at the moment in which I need a fresh mind to fix.
-1) Any movement of the sticks seems to turn the LED off as if we're receiving invalid pulses...
-2) Sometime the Robot tries to turn the wrong way to reach the setpoint...
+1) Strange jerky movements. Especially when trying to go in fast circles. Instead you get a kinda hexagon movement. Maybe need PID rather than PI control
+2) If DMP6050 not connected - still work
 
+
+A) Rename routines to something proper
+B) Rename FwdBck etc in the interrupt routines to make more sense!
 
 We're going for a rate of turn approach. The steering stick will set the rate of turn and the robot will attempt to follow.
 stick local variables everywhere instead of globals!
 
-
-Keep track of angle rotated from startup reference. Will probs have to use 500 maybe 1000dps mode on IMU.
-There are many options on how to control the bot:
+There are a few options on how to control the bot:
  - right stick direction of heading and speed
- - right stick direction, left stick speed.
- - left l/r stick rate of turn. right stick speed
- - Somehow connect up a dial and use this to turn the bot.
+ - Rate of turn and speed
+ - A dial that sets the setpoint
 
 */
 #include "I2Cdev.h"
@@ -46,9 +45,12 @@ volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin h
 const float VOLTAGE_SENSE_CONSTANT = 24.71;
 const int BATTERY_THRESHOLD_LOW = 6400;                                           // If voltage falls below this, enter sleep
 const int BATTERY_THRESHOLD_HGH = 6800;                                           // If voltage rises above this, turn active again
+const int NO_SIGNAL_THESHOLD = 10;
 
 const int VALID = 1;
 const int INVALID = 0;
+
+static int No_Signal = NO_SIGNAL_THESHOLD;                                        // Assume no signal at the beginning
  
 //--- Pin definitions: -----------------------------------------------------------
 const int LED = 0;                                                                // LED Pin. Although this is also the Rx pin
@@ -75,6 +77,7 @@ int Low_Battery(void);
 void setup_6050(void);
 void PID_Routine(void);
 float Turn_Error(void);
+int Process_PPM(void);
 
 //--- Setup: ---------------------------------------------------------------------
 void setup() 
@@ -106,18 +109,19 @@ void setup()
 //--- Main: ----------------------------------------------------------------------
 void loop() {
     // If DMP initialisation failed just run without gyro control
-    if (!dmpReady) 
-      {
-        while(1)  {
-          if(!Low_Battery())  {
-            Update_Motors();         
-          } 
-        }
+    if (!dmpReady)  {
+      while(1)  {
+        if(!Low_Battery())  {
+          Process_PPM();    //##############THIS BIT IS INCORRECT BUT ONLY RUNS IF DMP6050 ISN'T WORKING...        
+        } 
       }
+    }
     
     while (!mpuInterrupt && fifoCount < packetSize) {                             // wait for MPU interrupt or extra packet(s) available          
-      if(!Low_Battery())  {
-        Update_Motors();         
+      if(!Low_Battery())  {        
+        if(Process_PPM() == VALID) {                                              // Process_PPM() returns 1 if valid PPM data is being received 
+          PID_Routine();
+        }         
       }         
     }
     
@@ -126,9 +130,8 @@ void loop() {
     
     fifoCount = mpu.getFIFOCount();                                               // get current FIFO count
     
-    if ((mpuIntStatus & 0x10) || fifoCount == 1024) {                             // check for overflow (this should never happen unless our code is too inefficient)
-        // reset so we can continue cleanly
-        mpu.resetFIFO();        
+    if ((mpuIntStatus & 0x10) || fifoCount == 1024) {                             // check for overflow (this should never happen unless our code is too inefficient)      
+      mpu.resetFIFO();                                                            // reset so we can continue cleanly      
     }    
     else if (mpuIntStatus & 0x02) {                                               // otherwise, check for DMP data ready interrupt (this should happen frequently)        
       while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();              // wait for correct available data length, should be a VERY short wait
@@ -146,23 +149,26 @@ void loop() {
 //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
 //#######################################################################################################################################################################
 //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
-void Update_Motors() 
+int Process_PPM() 
 {  
 // A few things about this routine:
 //  1) It's run every 40ms
 //  2) It validates PWM data on Ch1 & Ch2 and sets PWM outputs to motors accordingly 
 //  3) Turns LED on to indiciate circuit is receiving valid PWM from receiver     
 
-  // 1) -----
-  static int No_Signal;
+  // 1) -----  
   static int LfRghtPulse;
   static int FwdBckPulse;
   static unsigned long Time_at_Motor_Update;
   
   if(millis() - Time_at_Motor_Update < 40) { 
-    return;
-  }
-  
+    if(No_Signal > NO_SIGNAL_THESHOLD)  {
+      return(0);
+    }
+    else  {
+      return(1);  
+    }    
+  }  
   Time_at_Motor_Update = millis(); 
 
 
@@ -171,7 +177,7 @@ void Update_Motors()
       FwdBckPulseWdth_Safe = FwdBckPulseWdth - 1500;
       FwdBckPulseWdth = 0;                                                        // If no new values are received this ensures we don't keep using old PWM data
       
-      FwdBckPulseWdth_Safe = FwdBckPulseWdth_Safe / 4;
+      FwdBckPulseWdth_Safe = FwdBckPulseWdth_Safe / 2;
       FwdBckPulse = VALID;                  
     }
   else  {  
@@ -184,7 +190,7 @@ void Update_Motors()
       LfRghtPulseWdth = 0;
       
       yaw_setpoint += (((float)LfRghtPulseWdth_Safe) * 0.05);                     // Scaling so full stick (+500us) gives 500 degrees per second rate of turn
-      LfRghtPulseWdth_Safe = LfRghtPulseWdth_Safe / 4;     
+      LfRghtPulseWdth_Safe = LfRghtPulseWdth_Safe / 2;     
       LfRghtPulse = VALID;   
     }
   else  {
@@ -200,22 +206,23 @@ void Update_Motors()
       yaw_setpoint += 360.0;
     }      
 
-  if(FwdBckPulse && LfRghtPulse)  {                                               // If we've just received 2 valid pulses, run the PID routine  
-      PID_Routine();   
+  if(FwdBckPulse && LfRghtPulse)  {                                               // If we've just received 2 valid pulses, clear the No_Signal count    
       No_Signal = 0;  
     }      
    
 
   // 3) -----
-  if(No_Signal > 10)  {     
+  if(No_Signal > NO_SIGNAL_THESHOLD)  {     
     digitalWrite(LED, LOW);                                                       // Turn LED off if no signal is being received
     digitalWrite(MEnble, LOW);                                                    // Disable outputs  
            
     OCR1A = 128;
     OCR1B = 128; 
+    return(0);
   } 
   else  {
     digitalWrite(LED, HIGH);                                                      // Turn LED on to indicate signal being received   
+    return(1);
   }
 }
 
@@ -224,28 +231,43 @@ void PID_Routine()
 {
 // So we need LfRghtPulseWdth to adjust itself according to how much error there is. Here's a little PI controller to try out.
 // Things to adjust:
-// Kp & Ki
+// Kp, Ki & Kd
 // The constraints
 // The sample rate
 
-  float Error, Output;
-  static float IError; 
-  const float Kp = 1.0;
-  const float Ki = 0.05;    
+  static unsigned long Time_at_Motor_Update;
+  unsigned long delta_t;
+
+  delta_t = micros() - Time_at_Motor_Update;
+  
+  if(delta_t < 5000) { 
+    return;
+  }  
+  Time_at_Motor_Update = micros(); 
+
+
+  float Error, Output, dInput;
+  static float ErrorSum, LastYaw; 
+  const float Kp = 1.25;                                                          // And error of 30 degrees contributes 37.5 to the output
+  const float Ki = 8.0e-7;                                                        // And error of 30 degrees contributes to 24 to the output per second
+  const float Kd = 1.0e5;                                                         // 90 degree/second contributes -9 to the output    
   
   Error = Turn_Error();
-  IError += (Error * Ki);
-  IError = constrain(IError, -50.0, 50.0);
-  Output = (Error * Kp) + IError;
+  
+  ErrorSum += (Error * Ki) * delta_t;                                             // delta_t ~= 5000                                                       
+  ErrorSum = constrain(ErrorSum, -100.0, 100.0);
+
+  dInput = (yaw - LastYaw) / delta_t;
+  LastYaw = yaw;
+  
+  Output = (Error * Kp) + ErrorSum - (dInput * Kd);
   
   LfRghtPulseWdth_Safe = round(Output);
   LfRghtPulseWdth_Safe = constrain(LfRghtPulseWdth_Safe, -100, 100);
 
-  int Lout;
-  int Rout;
   digitalWrite(MEnble, HIGH);                                                     // Ensure outputs are enabled
-  Lout = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
-  Rout = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
+  int Lout = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
+  int Rout = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
   OCR1A = Lout;
   OCR1B = Rout;  
 }
@@ -401,7 +423,6 @@ void ISR_LR ()                                                                  
 void dmpDataReady() {
     mpuInterrupt = true;
 }
-
 
 
 
