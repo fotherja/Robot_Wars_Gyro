@@ -1,7 +1,11 @@
 /*
 To Do:
 1) Perhaps include some method to allow for PID tuning on the fly...?
-2) Perhaps detect if robot is not on the floor and temporaily disable PID control if so
+2) Perhaps reduce still time?
+3) Allow for 1 cell battery detection and low voltage cut out as well as 2 cell.
+4) Could in a new version include a boost converter to accept a 1 cell battery but still provide 5v to the receiver
+5) If we incorporated this circuit with Adam's NanoARC, we'd have an incredible product!
+6) Allow for single wire PPM input if possible
 
 
 A) Rename routines to something proper
