@@ -1,23 +1,39 @@
 /*
+ * BUGS TO FIX. WORK TO BE DONE!
+ * 
 To Do:
-1) Perhaps include some method to allow for PID tuning on the fly...?
-2) Perhaps reduce still time?
-3) Allow for 1 cell battery detection and low voltage cut out as well as 2 cell.
-4) Could in a new version include a boost converter to accept a 1 cell battery but still provide 5v to the receiver
-5) If we incorporated this circuit with Adam's NanoARC, we'd have an incredible product!
-6) Allow for single wire PPM input if possible
+1) Perhaps include some method to allow for PID tuning on the fly...? and EEPROM storage of these values
+2) Allow for single wire PPM input?
+3) ESC support - use timer 2B and interrupts - bit of effort but will work fine.
 
+Description:
+  This program is the Code for the Gyro Motor Controller (GMC) board. 
+  The board has a number of physical connections:
+   - GND and Battery+ power inputs
+   - 4 * motor outputs +/-. But there are only 2 motor channels
+   - GND and 5v BEC to power a RF receiver if need be
+   - 2 * PWM channel inputs from an RF receiver.
+   - IR receiver (3.3v, GND, Signal)
+  
+  Obviously whether you need each set of connections depends on whether your using IR or RF.
+   
+  The GMC receives from a RF receiver if one is connected otherwise it resorts to receiving from an IR receiver.
+  
+  All the GMC really does is act as a gyro stabilised mixer & motor driver for small robots. It uses a PID
+  control algorithm running at 200Hz to to keep the robot pointing in the direction stored in the global variable, 
+  Yaw_Setpoint. The remote control (IR or RF) changes this variable and the robot attempts to follow. The other input
+  is the speed value, which just moves the robot back and forth.
 
-A) Rename routines to something proper
-B) Rename FwdBck etc in the interrupt routines to make more sense!
+  The PID algorithm has a number of tunable parameters that significantly effect the robots character.
 
-We're going for a rate of turn approach. The steering stick will set the rate of turn and the robot will attempt to follow.
-stick local variables everywhere instead of globals!
+  - PWM pulsewidths are measured using pinchange interrupts on each channel and the micros() function
+  - IR data is read using pinchange interrupts and timer2. It expects manchester encoded data with a bit period of 0.8ms 
+   (1 start bit, 8 Yaw_Setpoint bits followed by 8 Speed bits). It's pretty robust to spikes and errors.
 
-There are a few options on how to control the bot:
- - right stick direction of heading and speed
- - Rate of turn and speed
- - A dial that sets the setpoint
+  There is low battery detection (works for 1S or 2S LiPos) and LED indication of various states:
+    - Low battery
+    - No signal
+    - Signal remaining in neutral so idling the motors
 
 */
 #include "I2Cdev.h"
@@ -47,35 +63,55 @@ volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin h
 
 //--- Defines: -------------------------------------------------------------------
 const float VOLTAGE_SENSE_CONSTANT = 24.71;
-const int BATTERY_THRESHOLD_LOW = 6300;                                           // If voltage falls below this, enter sleep
-const int BATTERY_THRESHOLD_HGH = 7000;                                           // If voltage rises above this, turn active again
-const int NO_SIGNAL_THESHOLD = 10;                                                // Number of erronous PPM signals received before we deduce no signal is being received
+const int BATTERY_THRESHOLD_LOW_2S = 6300;                                        // If voltage falls below this, enter sleep
+const int BATTERY_THRESHOLD_HGH_2S = 7000;                                        // If voltage rises above this, turn active again
+const int BATTERY_THRESHOLD_LOW_1S = 3150;                                        // If voltage falls below this, enter sleep
+const int BATTERY_THRESHOLD_HGH_1S = 3500;                                        // If voltage rises above this, turn active again
+
+const int NO_SIGNAL_THESHOLD_PWM = 10;                                            // Number of erronous PPM signals received before we deduce no signal is being received
+const int NO_SIGNAL_THESHOLD_IR = 10;                                             // Number of erronous PPM signals received before we deduce no signal is being received
 
 const int VALID = 1;
 const int INVALID = 0;
-
-static int No_Signal = NO_SIGNAL_THESHOLD;                                        // Assume no signal at startup
  
 //--- Pin definitions: -----------------------------------------------------------
 const int LED = 0;                                                                // LED Pin. Although this is also the Rx pin
 
-const int FwdBckIn = 1;                                                           // This is PCINT17 (calls PCINT2_vect). Although this is also the Tx pin
-const int LfRghtIn = 3;                                                           // This is INT1
+const int FwdBckIn = 3;                                                           // This is INT1
+const int LfRghtIn = 1;                                                           // This is PCINT17 (calls PCINT2_vect). Although this is also the Tx pin
 
 const int MEnble = 8;                                                             // Enable Motors
 const int MotorL = 9;                                                             // Left Motors
 const int MotorR = 10;                                                            // Right Motors
 
+const int IR_Pos = 13;                                                            // Convienient use of pins to supply power to IR reciever.
+const int IR_GND = 12;
+const int IR_In  = 11;                                                            // PB3 which is PCINT3
+
 const int Vsense = A2;                                                            // Voltage sensing (150ohm to 1K divider)
 
 //--- Globals: -------------------------------------------------------------------
-volatile signed long FwdBckPulseWdth;                                             // The interrupt routines continously update these whenever a new PPM signal is received (hence volatile!)
-volatile signed long LfRghtPulseWdth;
+volatile long FwdBckPulseWdth;                                                    // The interrupt routines continously update these whenever a new PPM signal is received (hence volatile!)
+volatile long LfRghtPulseWdth;
 
-signed long FwdBckPulseWdth_Safe;                                                 // The Process_PPM routine saves the volatile versions above to these safe copies for later modification and use  
-signed long LfRghtPulseWdth_Safe;
+long FwdBckPulseWdth_Safe;                                                        // The Process_PPM routine saves the volatile versions above to these safe copies for later modification and use  
+long LfRghtPulseWdth_Safe;
 
 float Yaw, Yaw_setpoint;                                                          // The measured Yaw and the desired Yaw provided by the user's stick movements (respectively)
+
+char RF_Receiver_Connected;
+
+//--- IR Related:
+volatile unsigned long Total_Time_High;                                           // Measures the time spent high during a bit_period. If Total_Time_High > 1/2 * Bit period we assume a 1 was sent. Filters spikes
+volatile unsigned long TimeA, Time_Diff;
+volatile unsigned long Encoded_Data[2];
+volatile boolean Decode_Flag;
+
+volatile int bit_index = 0;
+volatile boolean State;
+
+byte IR_Yaw_Setpoint;
+byte IR_Speed;
 
 //--- Routines -------------------------------------------------------------------
 int Low_Battery(void);                                                            // Returns 0 if battery is sufficiently charged, 1 otherwise. Includes hysterisis & LED flashing for low battery (Non-blocking)
@@ -83,6 +119,9 @@ void setup_6050(void);                                                          
 void PID_Routine(void);                                                           // Iterates PID algorithm if enough time has passed since last call and updates the PWM signals to the motors
 float Turn_Error(void);                                                           // From the Yaw & Yaw_setpoint, this routine returns how many degrees we are from where we want to be. 
 int Process_PPM(void);                                                            // Validates and processes PPM signals received by the interrupt routines. Updates Yaw_setpoint. Returns 0 if no PPM signal. 
+int Process_IR(void);                                                             // Validates and processes IR signals recieved by the interrupt routines. Updates Yaw_setpoint. Returns 0 if no IR signal.
+long Decode(void);                                                                // Decodes the Manchester encoded received IR Data
+void IR_OR_PWM(void);                                                             // Discovers whether we have an RF receiver or IR receiver connected at startup. The correct routines get called depending on this
 
 //--- Setup: ---------------------------------------------------------------------
 void setup() 
@@ -102,13 +141,30 @@ void setup()
   pinMode(MEnble, OUTPUT);
 
   pinMode(FwdBckIn, INPUT_PULLUP);
-  pinMode(LfRghtIn, INPUT_PULLUP);  
+  pinMode(LfRghtIn, INPUT_PULLUP); 
 
-  attachInterrupt (digitalPinToInterrupt(3), ISR_LR, CHANGE);                     // Attach interrupt handler
-  PCMSK2 = 0b00000010;                                                            // Allow interrupt only PCINT17
-  PCICR = 0b00000100;                                                             // Enable Interrupt on PCI_2
+  digitalWrite(IR_Pos, HIGH);  pinMode(IR_Pos, OUTPUT);                           // Power the IR Reciever using the I/Os themselves. The current is small so it's ok.
+  digitalWrite(IR_GND, LOW);   pinMode(IR_GND, OUTPUT);
+  pinMode(IR_In, INPUT_PULLUP);   
+
+  //Configure Timer2 to interrupt every 0.4ms  
+  TCCR2A = 0;  
+  TCCR2B = 0;  
+  TCNT2  = 0;  
+  OCR2A  = 49;                                                                    // Interrupt every 0.4ms
+  TCCR2A = 0b00000010;                                                            // Clear Timer on Compare match mode
+  TCCR2B = 0b00000101;                                                            // ticks at 125KHz  
+  TIMSK2 = 0b00000010;                                                            // Compare match on OCR2A interrupt
+
+  attachInterrupt (digitalPinToInterrupt(3), ISR_LR, CHANGE);                     // Attach interrupt handler              (FwdBckIn)
+  PCMSK0 = 0b00001000;                                                            // Allow interrupt only PCINT3           (IR_In)
+  PCMSK2 = 0b00000010;                                                            // Allow interrupt only PCINT17          (LfRghtIn)
+  PCICR = 0b00000101;                                                             // Enable Interrupt on PCI_2 and PCI_0
 
   pinMode(LED, OUTPUT); 
+
+  //Serial.begin(115200);
+  IR_OR_PWM();                                                                    // Sets the RF_Receiver_Connected global variable to 1 if true otherwise 0
 }
 
 //--- Main: ----------------------------------------------------------------------
@@ -116,26 +172,43 @@ void loop() {
     // If DMP initialisation failed just run without gyro control
     if (!dmpReady)  {
       while(1)  {
-        if(!Low_Battery())  {                                                     // If the battery isn't flat...
-          if(Process_PPM() == VALID) {                                            // If we're recieving valid PPM data... 
+        if(!Low_Battery())  { 
+          if(RF_Receiver_Connected) {                                             // If an RF receiver is connected take signals from this as it has better performance than an IR controller
+            if(Process_PPM() == VALID)                                            // Process_PPM() returns 1 if valid PPM data is being received
             
-            digitalWrite(MEnble, HIGH);                                           // Ensure outputs are enabled and go on to update them
-            int Lout = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
-            int Rout = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
-            OCR1A = Lout;
-            OCR1B = Rout;
-          }          
-        } 
+              digitalWrite(MEnble, HIGH);                                         // Ensure outputs are enabled and go on to update them
+              int Lout = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
+              int Rout = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
+              OCR1A = Lout;
+              OCR1B = Rout;              
+          }
+          else  {                                                                 // Otherwise we assume an IR receiver is connected. If it's not we shutdown the motors anyway
+            if(Process_IR() == VALID) {                                           // Process_IR() returns 1 if valid IR data is being received 
+              
+              digitalWrite(MEnble, HIGH);                                         // Ensure outputs are enabled and go on to update them
+              int Lout = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
+              int Rout = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
+              OCR1A = Lout;
+              OCR1B = Rout;              
+            }                
+          }
+        }
       }
-    }
+    }          
 
     while (!mpuInterrupt && fifoCount < packetSize) {                             // wait for MPU interrupt or extra packet(s) available          
-      if(!Low_Battery())  {        
-        if(Process_PPM() == VALID) {                                              // Process_PPM() returns 1 if valid PPM data is being received 
-          PID_Routine();
-        }         
+      if(!Low_Battery())  { 
+        if(RF_Receiver_Connected) {                                               // If an RF receiver is connected take signals from this as it has better performance than an IR controller
+          if(Process_PPM() == VALID)                                              // Process_PPM() returns 1 if valid PPM data is being received 
+            PID_Routine();
+        }
+        else  {                                                                   // Otherwise we assume an IR receiver is connected. If it's not we shutdown the motors anyway
+          if(Process_IR() == VALID) {                                             // Process_IR() returns 1 if valid IR data is being received 
+            PID_Routine();
+          }                
+        }
       }         
-    }
+    }             
     
     mpuInterrupt = false;                                                         // reset interrupt flag and get INT_STATUS byte
     mpuIntStatus = mpu.getIntStatus();
@@ -164,7 +237,7 @@ void loop() {
 int Process_PPM() 
 {  
 // A few things about this routine:
-//  1) It's run every 40ms
+//  1) It's run every 38ms
 //  2) It validates PPM data on Ch1 & Ch2 
 //  3) Turns LED on to indiciate circuit is receiving valid PPM from receiver     
 //  4) If Sticks are in their neutral position for > 1 second, set Yaw_Setpoint = Yaw & stop motors
@@ -172,11 +245,12 @@ int Process_PPM()
   // 1) -----  
   static int LfRghtPulse;
   static int FwdBckPulse;
-  static int Neutral_Input_Count = 25;
+  static int Neutral_Input_Count_PWM = 25;
   static unsigned long Time_at_Motor_Update; 
+  static int No_Signal_PWM = NO_SIGNAL_THESHOLD_PWM;                              // Assume no signal at startup
   
-  if(millis() - Time_at_Motor_Update < 40) { 
-    if(No_Signal > NO_SIGNAL_THESHOLD || Neutral_Input_Count >= 25)  {
+  if(millis() - Time_at_Motor_Update < 38) { 
+    if(No_Signal_PWM > NO_SIGNAL_THESHOLD_PWM || Neutral_Input_Count_PWM >= 25)  {
       digitalWrite(MEnble, LOW);
       Yaw_setpoint = Yaw;
       return(0);
@@ -198,7 +272,7 @@ int Process_PPM()
     }
   else  {  
       FwdBckPulse = INVALID;
-      No_Signal++;        
+      No_Signal_PWM++;        
     }
   
   if((LfRghtPulseWdth >= 900) && (LfRghtPulseWdth <= 2100)) {                     // If we have a pulse within valid range
@@ -211,7 +285,7 @@ int Process_PPM()
     }
   else  {
       LfRghtPulse = INVALID;
-      No_Signal++;
+      No_Signal_PWM++;
     }                                                             
        
 
@@ -223,11 +297,11 @@ int Process_PPM()
     }      
 
   if(FwdBckPulse && LfRghtPulse)  {                                               // If we've just received 2 valid pulses, clear the No_Signal count    
-      No_Signal = 0;  
+      No_Signal_PWM = 0;  
     }  
 
   // 3) -----
-  if(No_Signal > NO_SIGNAL_THESHOLD)  {     
+  if(No_Signal_PWM > NO_SIGNAL_THESHOLD_PWM)  {     
     digitalWrite(LED, LOW);                                                       // Turn LED off if no signal is being received
     digitalWrite(MEnble, LOW);                                                    // Disable outputs  
            
@@ -238,13 +312,13 @@ int Process_PPM()
 
   // 4) -----
   if(abs(LfRghtPulseWdth_Safe) <= 10 && abs(FwdBckPulseWdth_Safe) <= 10) {        // If control sticks are in their neurtal position...
-    Neutral_Input_Count++;
+    Neutral_Input_Count_PWM++;
     
-    if(Neutral_Input_Count >= 25) {
+    if(Neutral_Input_Count_PWM >= 25) {
       Yaw_setpoint = Yaw;
       digitalWrite(MEnble, LOW);
       
-      if(Neutral_Input_Count % 15 == 0) {                                         // Slow flash LED to indicate the PID algorithm is suspended due to inactivity
+      if(Neutral_Input_Count_PWM % 15 == 0) {                                     // Slow flash LED to indicate the PID algorithm is suspended due to inactivity
         digitalWrite(LED, !digitalRead(LED));      
       }     
        
@@ -252,7 +326,7 @@ int Process_PPM()
     }   
   }
   else  {
-    Neutral_Input_Count = 0; 
+    Neutral_Input_Count_PWM = 0; 
   }
   
   digitalWrite(LED, HIGH);                                                        // Turn LED on to indicate signal being received  
@@ -260,9 +334,126 @@ int Process_PPM()
 }
 
 //--------------------------------------------------------------------------------
+int Process_IR() 
+{ 
+// A few things about this routine:
+//  1) It's run every 38ms
+//  2) It checks if any IR Data is being recieved. If it is it will always be returning a 1 otherwise a 0 
+//  3) Turns LED on to indiciate circuit is receiving valid IR data from receiver  
+//  4) If the joysticks go still for a while, idle.   
+
+  // 1) ----- 
+  static int Neutral_Input_Count_IR = 25;
+  static unsigned long Time_at_Motor_Update; 
+  static int No_Signal_IR = NO_SIGNAL_THESHOLD_IR;                                // Assume no signal at startup
+  
+  if(millis() - Time_at_Motor_Update < 38) { 
+    if(No_Signal_IR > NO_SIGNAL_THESHOLD_IR || Neutral_Input_Count_IR >= 25)  {
+      digitalWrite(MEnble, LOW);                                                  
+      Yaw_setpoint = Yaw;
+      return(0);
+    }
+    else  {
+      return(1);  
+    }    
+  }  
+  Time_at_Motor_Update = millis();
+
+
+  FwdBckPulseWdth_Safe = 0; 
+  LfRghtPulseWdth_Safe = 0; 
+    
+  if(Decode_Flag)  {                                                              // If IR Data has been received
+    unsigned long IR_Data = Decode();                                             // Decode the data
+    if(IR_Data)   {                                                               // If The data contains information clear the no signal count and extract the info
+      No_Signal_IR = 0;
+      
+      Yaw_setpoint = (float)map(((IR_Data >> 8) & 0xFF), 0, 255, 0, 359);
+      FwdBckPulseWdth_Safe = (IR_Data & 0xFF) - 128;
+      FwdBckPulseWdth_Safe = (FwdBckPulseWdth_Safe * 3) / 4; 
+       
+      static float Old_Yaw_setpoint;
+      LfRghtPulseWdth_Safe = round((Yaw_setpoint - Old_Yaw_setpoint) * 5.0);     // Incase the Gyro chip isn't populated this still allows for IR robot control
+      Old_Yaw_setpoint = Yaw_setpoint;
+    }
+    else  
+      No_Signal_IR++;                                                             // If the data packet was empty which occurs if there was an error etc, increase no signal count          
+  }
+  else  
+    No_Signal_IR++;                                                               // Or if there was no data received at all, increase no signal count
+
+  // 3) -----
+  if(No_Signal_IR > NO_SIGNAL_THESHOLD_IR)  {     
+    digitalWrite(LED, LOW);                                                       // Turn LED off if no signal is being received
+    digitalWrite(MEnble, LOW);                                                    // Disable outputs  
+           
+    OCR1A = 128;
+    OCR1B = 128; 
+    return(0);
+  }
+
+  // 4) -----
+  if(abs(LfRghtPulseWdth_Safe) <= 10 && abs(FwdBckPulseWdth_Safe) <= 10) {        // If control sticks are in their neurtal position...
+    Neutral_Input_Count_IR++;
+    
+    if(Neutral_Input_Count_IR >= 25) {
+      Yaw_setpoint = Yaw;
+      digitalWrite(MEnble, LOW);
+      
+      if(Neutral_Input_Count_IR % 15 == 0) {                                      // Slow flash LED to indicate the PID algorithm is suspended due to inactivity
+        digitalWrite(LED, !digitalRead(LED));      
+      }     
+             
+      return(0);                                                                  // Return with a zero to disable motor activity
+    }   
+  }
+  else  {
+    Neutral_Input_Count_IR = 0; 
+  }  
+  
+  digitalWrite(LED, HIGH);                                                        // Turn LED on to indicate signal being received ok  
+  return(1);  
+}
+
+//--------------------------------------------------------------------------------
+long Decode()
+{
+// Encoded_Data from ISR is processed to a long. If data is erronous return 0? 1101_0101_0101_0100_1101_0101_0101_010
+                                                                            
+  int i, index; 
+  char BitH;
+  char BitL;
+  unsigned long IR_Data = 0;
+  unsigned long Encoded_Data_Safe[2];
+  
+  Encoded_Data_Safe[0] = Encoded_Data[0];
+  Encoded_Data_Safe[1] = Encoded_Data[1];
+  Decode_Flag = 0;
+
+  index = 15;
+  for(i = 31; i >= 0;i -= 2)
+  {
+    BitH = bitRead(Encoded_Data_Safe[0], i);
+    BitL = bitRead(Encoded_Data_Safe[0], i-1);
+
+    if(BitH && !BitL)
+      bitSet(IR_Data, index); 
+    else if(!BitH && BitL)
+      bitClear(IR_Data, index); 
+    else
+      return(0);                                                                  // Erronous data, ignore packet
+
+    index--;
+  }
+
+  return(IR_Data);
+}
+
+//--------------------------------------------------------------------------------
 void PID_Routine()
 {
-// So we need LfRghtPulseWdth to adjust itself according to how much error there is. Here's a little PI controller to try out.
+// So we need LfRghtPulseWdth to adjust itself according to how much error there is. Here's a little PID controller to do that. 
+// It uses the global variable Yaw_Setpoint & need FwdBckPulseWdth_Safe for speed control
 // Things to adjust:
 // Kp, Ki & Kd
 // The constraints
@@ -271,19 +462,16 @@ void PID_Routine()
   static unsigned long Time_at_Motor_Update;
   unsigned long delta_t;
 
-  delta_t = micros() - Time_at_Motor_Update;
-  
-  if(delta_t < 5000) { 
-    return;
-  }  
-  Time_at_Motor_Update = micros(); 
-
+  delta_t = micros() - Time_at_Motor_Update;  
+  if(delta_t < 5000)                                                              // Run this routine every 5ms
+    return; 
+  Time_at_Motor_Update = micros();
 
   float Error, Output, dInput;
   static float ErrorSum, LastYaw; 
-  const float Kp = 1.25;                                                          // And error of 30 degrees contributes 37.5 to the output
-  const float Ki = 8.0e-7;                                                        // And error of 30 degrees contributes to 24 to the output per second
-  const float Kd = 1.0e5;                                                         // 90 degree/second contributes -9 to the output    
+  const float Kp = 1.25;                                                          // And error of 30 degrees contributes ~37.5 to the output
+  const float Ki = 8.0e-7;                                                        // And error of 30 degrees contributes to ~24 to the output per second
+  const float Kd = 1.2e5;    //1.0                                                // 90 degree/second contributes -9 to the output    
   
   Error = Turn_Error();
   
@@ -298,7 +486,7 @@ void PID_Routine()
   LfRghtPulseWdth_Safe = round(Output);
   LfRghtPulseWdth_Safe = constrain(LfRghtPulseWdth_Safe, -100, 100);
 
-  digitalWrite(MEnble, HIGH);                                                   // Ensure outputs are enabled
+  digitalWrite(MEnble, HIGH);                                                     // Ensure outputs are enabled
   int Lout = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
   int Rout = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
   OCR1A = Lout;
@@ -370,19 +558,44 @@ int Low_Battery()
 // Returns 0 if battery is sufficiently charged, 1 otherwise. Looks complicated because it also has hysterisis and fast flashes the LED to indicate the problem
   
   static unsigned long Time_at_LED_Change = 0;
+  static char Number_Of_Cells;
   static bool Low_Battery_Flag = 0;
   
   float BVoltage = analogRead(Vsense) * VOLTAGE_SENSE_CONSTANT;                   //Convert to millivolts
-  
-  if(BVoltage > BATTERY_THRESHOLD_LOW && !Low_Battery_Flag)
-    {
-      return(0);
-    }
-  if(BVoltage > BATTERY_THRESHOLD_HGH)
-    {
-      Low_Battery_Flag = 0;
-      return(0);
-    }
+
+  // This section only runs the first time this routine is called. It detects how many cells the battery is made of
+  static char Called_Before_Flag = 0;
+  if(!Called_Before_Flag) {
+    Called_Before_Flag = 1;
+
+    if(BVoltage >= 5500)
+      Number_Of_Cells = 2;
+    else
+      Number_Of_Cells = 1;
+  }
+
+  if(Number_Of_Cells == 2)  {
+    if(BVoltage > BATTERY_THRESHOLD_LOW_2S && !Low_Battery_Flag)
+      {
+        return(0);
+      }
+    if(BVoltage > BATTERY_THRESHOLD_HGH_2S)
+      {
+        Low_Battery_Flag = 0;
+        return(0);
+      }
+  }
+  else  {
+    if(BVoltage > BATTERY_THRESHOLD_LOW_1S && !Low_Battery_Flag)
+      {
+        return(0);
+      }
+    if(BVoltage > BATTERY_THRESHOLD_HGH_1S)
+      {
+        Low_Battery_Flag = 0;
+        return(0);
+      } 
+  }   
 
   Low_Battery_Flag = 1;  
   digitalWrite(MEnble, LOW);                                                      //Disable all outputs
@@ -426,37 +639,115 @@ void setup_6050() {
     } 
 }
 
+void IR_OR_PWM()  {
+  delay(500);
+  LfRghtPulseWdth = 0;
+  FwdBckPulseWdth = 0;
+  delay(250);
+
+  if(LfRghtPulseWdth && FwdBckPulseWdth)
+    RF_Receiver_Connected = 1;
+  else
+    RF_Receiver_Connected = 0;  
+}
+
 //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
 //########## INTERRUPT DETECTION ROUTINES ###############################################################################################################################
 //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
-ISR (PCINT2_vect)                                                                 // Change in FwdBckIn pin
+ISR (PCINT2_vect)                                                                 // Change in LfRghtIn pin of PWM in
 {
   static unsigned long Time_at_Rise_FB = 0;
   
-  if (digitalRead(FwdBckIn) == HIGH)
+  if (digitalRead(LfRghtIn) == HIGH)
     Time_at_Rise_FB = micros();
   else
-    LfRghtPulseWdth = micros() - Time_at_Rise_FB;                                 // Yeah I know this is a bit confusing! Sorry. May change later? 
+    LfRghtPulseWdth = micros() - Time_at_Rise_FB;                                 
     
   PCIFR = 0b00000100;                                                             // Writing 1 clears the flag (Ridiciulous)
 } 
 
-
-void ISR_LR ()                                                                    // Change in LfRghtIn Pin
+//--------------------------------------------------------------------------------
+void ISR_LR()                                                                     // Change in FwdBckIn Pin of PWM in
 {
   static unsigned long Time_at_Rise_LR = 0;
   
-  if (digitalRead(LfRghtIn) == HIGH)
+  if (digitalRead(FwdBckIn) == HIGH)
     Time_at_Rise_LR = micros();
   else
     FwdBckPulseWdth = micros() - Time_at_Rise_LR;                                 
 }
 
-
+//--------------------------------------------------------------------------------
 void dmpDataReady() {
     mpuInterrupt = true;
 }
 
+//--------------------------------------------------------------------------------
+// This routine is for the IR data reciever. Once the start of a packet is detected, this routine works out if a 1 or 0 was sent after each bit period.
+ISR (TIMER2_COMPA_vect)                                                           // IR dedicated timer compare match     
+{  
+  static unsigned long DataH, DataL;
+  
+  if(bit_index)
+  {     
+    bit_index--;
+    
+    Time_Diff = micros() - TimeA;
+    TimeA = Time_Diff + TimeA;
+
+    if(bit_index == 32)                                                           // To ignore the first start signal   
+    {
+      Total_Time_High = 0;
+      return;
+    }    
+    
+    if(State == HIGH) {
+      Total_Time_High += Time_Diff;  
+    }
+
+    if(Total_Time_High > 200) {
+      bitWrite(DataL, bit_index, 1);           
+    }
+    else  {
+      bitWrite(DataL, bit_index, 0); 
+    }   
+    
+    Total_Time_High = 0;
+
+    if(!bit_index)  {
+      Decode_Flag = 1;
+      Encoded_Data[0] = DataL;               
+    }
+  }
+} 
+
+//--------------------------------------------------------------------------------
+ISR (PCINT0_vect)                                                                 // IR_Pin Change
+{   
+  PCIFR = 0b00000001;                                                             // Writing 1 clears the flag (Ridiciulous)
+  
+  Time_Diff = micros() - TimeA;
+  TimeA = Time_Diff + TimeA;
+
+  State = digitalRead(IR_In);
+
+  if(bit_index)                                                                   // If signal has started
+  {
+    if(State == LOW)                                                              //Signal must have just gone low so Time_Diff holds the most recent high pulse width
+    {
+      Total_Time_High += Time_Diff;
+    }    
+  } 
+
+  // Here we detect whether the the signal has just started. If it has, set bit_index to EXPECTED_BITS*2 + 1
+  if (!State && (Time_Diff > 20000))
+  {   
+    TCNT2 = 0;                                                                    // Reset the counter.      
+    bit_index = 33; 
+    TIFR2 = 0b00000010;                                                           //reset any counter interrupt too.        
+    return;        
+  }        
+}
 
 
 
