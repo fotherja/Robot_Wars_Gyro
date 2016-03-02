@@ -669,9 +669,10 @@ void IR_OR_PWM()
     digitalWrite(LED, HIGH);
     delay(125);
   
-    if(LfRghtPulseWdth && FwdBckPulseWdth)                                        // If we're receiving RF data return with RF_Receiver_Connected = 1
+    if(LfRghtPulseWdth && FwdBckPulseWdth)  {                                     // If we're receiving RF data return with RF_Receiver_Connected = 1
       RF_Receiver_Connected = 1;
       return;
+    }
       
     if(Decode_Flag) {
       if(Decode())  {                                                             // If we're receiving a proper manchester encoded signal from the IR return with RF_Receiver_Connected = 0;                         
