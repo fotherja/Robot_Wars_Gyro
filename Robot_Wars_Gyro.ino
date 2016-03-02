@@ -6,6 +6,8 @@ To Do:
   (Mode entered if start button held for 3 seconds) etc
 4) Allow for single wire PPM input?
 5) ESC support
+6) Could have a time based signal timeout rather than a count based one. Seems to make more sense.
+7) Error detection during IR receive
 
 Description:
   This program is the Code for the Gyro Motor Controller (GMC) board. 
@@ -482,7 +484,7 @@ int PID_Routine()
 
   float Error, Output, dInput;
   static float ErrorSum, LastYaw; 
-  const float Kp = 1.25;                                                          // And error of 30 degrees contributes ~37.5 to the output
+  const float Kp = 1.00;                                                          // And error of 30 degrees contributes ~37.5 to the output
   const float Ki = 4.0e-7;                                                        // And error of 30 degrees contributes to ~24 to the output per second
   const float Kd = 0.5e5;                                                         // 90 degree/second contributes -9 to the output    
   
@@ -572,17 +574,14 @@ int Low_Battery()
 {
 // Returns 0 if battery is sufficiently charged, 1 otherwise. Looks complicated because it also has hysterisis and fast flashes the LED to indicate the problem
   
-  static unsigned long Time_at_LED_Change = 0;
-  static char Number_Of_Cells;
+  static unsigned long Time_at_LED_Change = 0;  
   static bool Low_Battery_Flag = 0;
   
   float BVoltage = analogRead(Vsense) * VOLTAGE_SENSE_CONSTANT;                   //Convert to millivolts
 
   // This section only runs the first time this routine is called. It detects how many cells the battery is made of
-  static char Called_Before_Flag = 0;
-  if(!Called_Before_Flag) {
-    Called_Before_Flag = 1;
-
+  static char Number_Of_Cells = 0;
+  if(!Number_Of_Cells) {
     if(BVoltage >= 5500)
       Number_Of_Cells = 2;
     else
@@ -664,8 +663,11 @@ void IR_OR_PWM()
     LfRghtPulseWdth = 0;
     FwdBckPulseWdth = 0;
     Decode_Flag = 0;
-    
-    delay(250);
+
+    digitalWrite(LED, LOW);
+    delay(125);
+    digitalWrite(LED, HIGH);
+    delay(125);
   
     if(LfRghtPulseWdth && FwdBckPulseWdth)                                        // If we're receiving RF data return with RF_Receiver_Connected = 1
       RF_Receiver_Connected = 1;
