@@ -1,22 +1,12 @@
 /*
- * 
+ *  
 To Do:
-1) Allow for single wire PPM input?
-6) Could add a moving avergae filter to the motors to reduce such harsh accelerations...
-
-SOME BIG IMPROVMENETSS
-1) Just whack a blocking PWM generation pulse after every other call of the PID algorithm. <- DONE!
-2) Carry out IR_Process every 41ms exactly rather than 41ms after it passes. <- DONE
-3) After detection of initial start pulse, don't search again until 38ms later. ie. until just before packet is expected again. This will allow ignorance of inbetween 
-   data being sent to another robot. Would almost get away with same start bits. But no have a 200us and 600us start bit for channel 0 and 1 respectively. This is exactly what we want!!!! <- DONE
-
-
-5) yeah I think it might be better if motors don't switch off every failed process_IR. this might be the reason for the current jumpyness <- DONE
-6) Direct register writes for pin changes/reads etc
-
-How are we doing on CPU usage?
-
-
+1) Allow for single wire PPM input? -> hard
+2) Could add a moving avergae filter to the motors to reduce such harsh accelerations... -> medium
+3) Direct register writes for pin changes/reads etc -> easy
+4) Channel switching on the fly/or just in sortware at least. -> easy
+5) ESC stops when in neutral - keep it going... -> easy
+6) Allow for 3 channel PCM input? to support yaw_setpoint with RF etc. -> hard
 
 Use of Peripherals:
   - Timer0 - delay(), millis(), micros()
@@ -130,11 +120,11 @@ void setup()
     Access_EEPROM(1);
   }
   if(Ki >= 4.0e-6)  {
-    Kp = 1.00f; Ki = 4.0e-7f; Kd = 5.0e4f;
+    Kp = 1.20f; Ki = 2.0e-7f; Kd = 5.0e4f;
     Access_EEPROM(1);
   }
   if(Kd >= 2.0e6)  {
-    Kp = 1.00f; Ki = 4.0e-7f; Kd = 5.0e4f;
+    Kp = 1.20f; Ki = 2.0e-7f; Kd = 5.0e4f;
     Access_EEPROM(1);
   }
     
@@ -194,7 +184,7 @@ void setup()
     detachInterrupt(digitalPinToInterrupt(3));                                    // If No RF receiver attached disable the interrupts on these pins and use pin 3 for an ESC PWM signal
     PCMSK2 = 0b00000000; 
     pinMode(PWM_Pin, OUTPUT);
-    PWM_Pulse_Width = 1000;
+    PWM_Pulse_Width = 1000;                                                       // Setting this to a value between 800-2000 enables the output
     
     Beep_Motors(4000, 100);                                                       // Beep twice if IR being used (secondary control...)
     delay(100);
@@ -581,12 +571,12 @@ char PID_Routine()
   ENABLE_MOTORS;                                                                  // Ensure outputs are enabled 
   static unsigned char BufferA[ROLLING_AVG_FILTER_LENGTH], IndexA;
   static unsigned char BufferB[ROLLING_AVG_FILTER_LENGTH], IndexB; 
-  unsigned char  Lout = Rolling_Avg(BufferA, constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));       //Rolling_avg not actually working yet!  
+  unsigned char  Lout = Rolling_Avg(BufferA, constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));       //Rolling_avg not actually implimented yet!  
   unsigned char Rout = Rolling_Avg(BufferB, constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));         
   OCR1A = Lout;
   OCR1B = Rout;
 
-  // Blocking code to generate a PWM pulse should PWM_Pulse_Width be in 800-2000 range.
+  // Blocking code to generate a PWM pulse should PWM_Pulse_Width be in 800-2000 range. But this requires the PID algorithm to be called!
   if(PWM_Pulse_Width > 800) {
     if(PWM_Pulse_Width < 2000) {
       static char Toggle = 0;
@@ -857,3 +847,4 @@ ISR (PCINT0_vect)                                                               
     return;        
   }
 }
+
