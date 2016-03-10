@@ -1,10 +1,9 @@
 /*
  *  
 To Do:
-1) Allow for single wire PPM input? -> hard
+1) Allow for single wire PPM input? -> hard/not important.
 2) Could add a moving avergae filter to the motors to reduce such harsh accelerations... -> medium
-3) Direct register writes for pin changes/reads etc -> easy
-4) Allow for 3 channel PCM input? to support yaw_setpoint with RF etc. -> hard
+3) Allow for 3 channel PCM input? to support yaw_setpoint with RF etc. -> hard/important for other people.
 
 Use of Peripherals:
   - Timer0 - delay(), millis(), micros()
@@ -75,9 +74,11 @@ float Kd;                                                                       
 
 volatile long FwdBckPulseWdth;                                                    // The interrupt routines continously update these whenever a new PPM signal is received (hence volatile!)
 volatile long LfRghtPulseWdth;
+volatile long AuxPulseWdth;
 
 long FwdBckPulseWdth_Safe;                                                        // The Process_PPM routine saves the volatile versions above to these safe copies for later modification and use  
 long LfRghtPulseWdth_Safe;
+long AuxPulseWdth_Safe;
 
 float Yaw, Yaw_setpoint;                                                          // The measured Yaw and the desired Yaw provided by the user's stick movements (respectively)
 
@@ -160,7 +161,7 @@ void setup()
   pinMode(FwdBckIn, INPUT_PULLUP);
   pinMode(LfRghtIn, INPUT_PULLUP); 
 
-  digitalWrite(IR_Pos, HIGH);  pinMode(IR_Pos, OUTPUT);                           // Power the IR Reciever using the I/Os themselves. The current is small so it's ok.
+  digitalWrite(IR_Pos, HIGH);  pinMode(IR_Pos, OUTPUT);                           // Power the IR Receiver using the I/Os themselves. The current is small so it's ok.
   digitalWrite(IR_GND, LOW);   pinMode(IR_GND, OUTPUT);
   pinMode(IR_In, INPUT_PULLUP);   
 
@@ -288,9 +289,6 @@ void Process_PPM()
   }  
   Time_at_Motor_Update += PPM_UPDATE_PERIOD;                                              
 
-  //FwdBckPulseWdth_Safe = 0;                                                     // Uncommenting these -> If no data is until the no signal timeout, the motors will run using their last received data values,                                              
-  //LfRghtPulseWdth_Safe = 0;                                                     // rather than stop. Can reduce jerkyness on poor signals but means robot doesn't stop on signal loss as quickly.
-
   // 2) -----
   if((FwdBckPulseWdth >= 900) && (FwdBckPulseWdth <= 2100)) {                     // If we have a pulse within valid range
       FwdBckPulseWdth_Safe = FwdBckPulseWdth - 1500;
@@ -315,9 +313,15 @@ void Process_PPM()
   else  {
       LfRghtPulse = INVALID;
       No_Signal_PWM++;
-    }                                                             
-       
+    }                                                              
 
+//##########################################################################################################
+  // Code to allow for 3rd channel RF. Things to consider:
+    // Perhaps reset the zero value on transmitter on/off cycling.
+    // how can drift be adjusted for.
+    // Since most people will probably use the GMC with RF control this all needs to be top notch!
+//##########################################################################################################    
+       
   if(Yaw_setpoint >= 360.0)                                                       // Keep Yaw_setpoint within 0-360 limits
       Yaw_setpoint -= 360.0;    
   else if(Yaw_setpoint < 0.0) 
@@ -331,6 +335,7 @@ void Process_PPM()
   if(No_Signal_PWM > NO_SIGNAL_THESHOLD_PWM)  {     
     LED_OFF;                                                                      // Turn LED off if no signal is being received
     DISABLE_MOTORS;                                                               // Disable outputs  
+    PWM_Pulse_Width = 0;                                                          // Stop all signals to ESC
            
     OCR1A = 128;
     OCR1B = 128; 
@@ -373,7 +378,7 @@ void Process_IR()
   // 1) ----- 
   static int Neutral_Input_Count_IR = 25;
   static unsigned long Time_at_Motor_Update; 
-  static int No_Signal_IR = NO_SIGNAL_THESHOLD_IR;                                // Assume no signal at startup
+  static int No_Signal_IR = NO_SIGNAL_THESHOLD_IR;                                // Assume no signal at start up
   
   if(millis() - Time_at_Motor_Update < IR_UPDATE_PERIOD) { 
     if(No_Signal_IR > NO_SIGNAL_THESHOLD_IR || Neutral_Input_Count_IR >= 25)  {
@@ -383,11 +388,7 @@ void Process_IR()
     return;         
   }  
   Time_at_Motor_Update += IR_UPDATE_PERIOD;                                      
-  
-
-  //FwdBckPulseWdth_Safe = 0;                                                     // Uncommenting these -> If no data is until the no signal timeout, the motors will run using their last received data values,                                              
-  //LfRghtPulseWdth_Safe = 0;                                                     // rather than stop. Can reduce jerkyness on poor signals but means robot doesn't stop on signal loss as quickly.
-    
+      
   if(Decode_Flag)  {                                                              // If IR Data has been received
     unsigned long IR_Data = Decode();                                             // Decode the data
     if(IR_Data)   {                                                               // If The data contains valid information clear the no signal count and extract the info
@@ -398,7 +399,7 @@ void Process_IR()
       FwdBckPulseWdth_Safe = (FwdBckPulseWdth_Safe * 3) / 4; 
        
       static float Old_Yaw_setpoint;
-      LfRghtPulseWdth_Safe = round((Yaw_setpoint - Old_Yaw_setpoint) * 5.0);      // Incase the Gyro chip isn't populated this still allows for IR robot control
+      LfRghtPulseWdth_Safe = round((Yaw_setpoint - Old_Yaw_setpoint) * 5.0);      // In case the Gyro chip isn't populated this still allows for IR robot control
       Old_Yaw_setpoint = Yaw_setpoint;
 
       // The last 4 bits of the packet contain info on whether to spin the ESC, change channel, or change the PID parameters etc the 4th bit will be for ESC control
@@ -425,6 +426,7 @@ void Process_IR()
   if(No_Signal_IR > NO_SIGNAL_THESHOLD_IR)  {     
     LED_OFF;                                                                      // Turn LED off if no signal is being received
     DISABLE_MOTORS;                                                               // Disable outputs  
+    PWM_Pulse_Width = 0;                                                          // Stop all signals to ESC.
     Access_EEPROM(EEPROM_WRITE);                                                  // Write PID parameters to EEPROM if they have been updated.
 
     OCR1A = 128;
@@ -692,7 +694,7 @@ void setup_6050() {
 }
 
 //--------------------------------------------------------------------------------
-void IR_OR_PWM()  
+void IR_OR_PWM()  // RF_Receiver_Connected = 0,1,2 - IR connectivity, RF 2 channels, RF 3 channels.   
 {
   delay(200);
   
@@ -706,10 +708,17 @@ void IR_OR_PWM()
     delay(125);
     LED_ON;
     delay(125);
-  
-    if(LfRghtPulseWdth && FwdBckPulseWdth)  {                                     // If we're receiving RF data return with RF_Receiver_Connected = 1
-      RF_Receiver_Connected = 1;
-      return;
+
+    if((FwdBckPulseWdth >= 900) && (FwdBckPulseWdth <= 2100)) {                   // If we're receiving RF data return with RF_Receiver_Connected = 1
+      if((LfRghtPulseWdth >= 900) && (LfRghtPulseWdth <= 2100)) {
+        RF_Receiver_Connected = 1;  
+        delay(125);                                                               // Allow time for IR mode to be switched off and for an RF PPM pulse to be captured.
+               
+        if((AuxPulseWdth >= 900) && (AuxPulseWdth <= 2100))
+          RF_Receiver_Connected = 2;      
+          
+        return;
+      }
     }
       
     if(Decode_Flag) {
@@ -823,34 +832,44 @@ ISR (TIMER2_COMPA_vect)                                                         
 //--------------------------------------------------------------------------------
 ISR (PCINT0_vect)                                                                 // IR_Pin Change
 { 
-  Time_Diff = micros() - TimeA;                                                  
-  State = IR_IN_STATE;
-
-  if(bit_index)                                                                   // If signal has started
-  {    
-    TimeA = Time_Diff + TimeA;                                                    // TimeA = micros() esentially, the time at beginning of this interrupt
-    
-    if(State == LOW)                                                              //Signal must have just gone low so Time_Diff holds the most recent high pulse width
-    {
-      Total_Time_High += Time_Diff;
-      return;
-    }    
-  } 
-
-  // Here we detect whether the the signal has just started. If it has, set bit_index to EXPECTED_BITS*2 + 1. We only detect start bits 20ms after the last packet finishes (i.e just befor next pulse 
-  // is due to arrive. This way we should sync with the transmitter and improve our robustness to interference etc.
-  if (!State && (Time_Diff > 20000))
-  {   
-    TimeA = Time_Diff + TimeA;                                                    // TimeA = micros() esentially, the time at beginning of this interrupt
-    
-    TCNT2 = 0;                                                                    // Reset the counter.
-    OCR2A = 99;                                                                   // Interrupt in 800us - Start bit measurement
-    
-    TIFR2 = 0b00000010;                                                           // Reset any counter interrupt 
-    TIMSK2 = 0b00000010;                                                          // Enable interrupts on OCR2A compare match          
-    bit_index = (EXPECTED_BITS * 2) + 1;                                          
-
-    return;        
+  if(!RF_Receiver_Connected)  {
+    Time_Diff = micros() - TimeA;                                                  
+    State = IR_IN_STATE;
+  
+    if(bit_index)                                                                   // If signal has started
+    {    
+      TimeA = Time_Diff + TimeA;                                                    // TimeA = micros() esentially, the time at beginning of this interrupt
+      
+      if(State == LOW)                                                              //Signal must have just gone low so Time_Diff holds the most recent high pulse width
+      {
+        Total_Time_High += Time_Diff;
+        return;
+      }    
+    } 
+  
+    // Here we detect whether the the signal has just started. If it has, set bit_index to EXPECTED_BITS*2 + 1. We only detect start bits 20ms after the last packet finishes (i.e just befor next pulse 
+    // is due to arrive. This way we should sync with the transmitter and improve our robustness to interference etc.
+    if (!State && (Time_Diff > 20000))
+    {   
+      TimeA = Time_Diff + TimeA;                                                    // TimeA = micros() esentially, the time at beginning of this interrupt
+      
+      TCNT2 = 0;                                                                    // Reset the counter.
+      OCR2A = 99;                                                                   // Interrupt in 800us - Start bit measurement
+      
+      TIFR2 = 0b00000010;                                                           // Reset any counter interrupt 
+      TIMSK2 = 0b00000010;                                                          // Enable interrupts on OCR2A compare match          
+      bit_index = (EXPECTED_BITS * 2) + 1;                                          
+  
+      return;        
+    }
   }
+  else  {
+    static unsigned long Time_at_Rise_Aux = 0;
+    
+    if (AUXIN_STATE == HIGH)
+      Time_at_Rise_Aux = micros();
+    else
+      AuxPulseWdth = micros() - Time_at_Rise_Aux;     
+  } 
 }
 

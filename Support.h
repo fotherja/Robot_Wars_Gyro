@@ -36,34 +36,36 @@
 
 #define   OCR2B_CMP_INTS_ENABLED      0b00000100 
           
-#define   ENABLE_MOTORS               digitalWrite(MEnble, HIGH)
-#define   DISABLE_MOTORS              digitalWrite(MEnble, LOW)
-#define   LED_ON                      digitalWrite(LED, HIGH)
-#define   LED_OFF                     digitalWrite(LED, LOW)
-#define   PWM_PIN_HIGH                digitalWrite(PWM_Pin, HIGH)
-#define   PWM_PIN_LOW                 digitalWrite(PWM_Pin, LOW)
+#define   ENABLE_MOTORS               PORTB |= 0x01                               // digitalWrite(MEnble, HIGH)   
+#define   DISABLE_MOTORS              PORTB &= 0xFE                               // digitalWrite(MEnble, LOW)    
+#define   LED_ON                      PORTD |= 0x01                               // digitalWrite(LED, HIGH)       
+#define   LED_OFF                     PORTD &= 0xFE                               // digitalWrite(LED, LOW)       
+#define   PWM_PIN_HIGH                PORTD |= 0x08                               // digitalWrite(PWM_Pin, HIGH)  
+#define   PWM_PIN_LOW                 PORTD &= 0xF7                               // digitalWrite(PWM_Pin, LOW)   
 
-#define   MOTORS_ENABLED              digitalRead(MEnble)
-#define   FWDBCKIN_STATE              digitalRead(FwdBckIn)
-#define   LFRGHTIN_STATE              digitalRead(LfRghtIn)
-#define   IR_IN_STATE                 digitalRead(IR_In)
+#define   MOTORS_ENABLED              PINB & 0x01                                 //digitalRead(MEnble)           
+#define   FWDBCKIN_STATE              PIND & 0x08                                 //digitalRead(FwdBckIn)         
+#define   LFRGHTIN_STATE              PIND & 0x02                                 //digitalRead(LfRghtIn)         
+#define   AUXIN_STATE                 PINB & 0x08                                 //digitalRead(AuxPWMIn)         
+#define   IR_IN_STATE                 PINB & 0x08                                 //digitalRead(IR_In)            
 
 //--- Pin definitions: -----------------------------------------------------------
-#define   PWM_Pin           3                                                     // Output PWM, used if IR detected and hence FwdBckIn not being used etc
+#define   PWM_Pin                     3                                           // Output PWM, used if IR detected and hence FwdBckIn not being used etc
 
-#define   FwdBckIn          3                                                     // This is INT1
-#define   LfRghtIn          1                                                     // This is PCINT17 (calls PCINT2_vect). Although this is also the Tx pin
+#define   FwdBckIn                    3                                           // This is INT1
+#define   LfRghtIn                    1                                           // This is PCINT17 (calls PCINT2_vect). Although this is also the Tx pin
+#define   AuxPWMIn                    11                                          // PB3 which is PCINT3
 
-#define   MEnble            8                                                     // Enable Motors
-#define   MotorL            9                                                     // Left Motors
-#define   MotorR            10                                                    // Right Motors
+#define   MEnble                      8                                           // Enable Motors
+#define   MotorL                      9                                           // Left Motors
+#define   MotorR                      10                                          // Right Motors
 
-#define   IR_Pos            13                                                    // Convienient use of pins to supply power to IR reciever.
-#define   IR_GND            12
-#define   IR_In             11                                                    // PB3 which is PCINT3
+#define   IR_Pos                      13                                          // Convienient use of pins to supply power to IR reciever.
+#define   IR_GND                      12
+#define   IR_In                       11                                          // PB3 which is PCINT3
 
-#define   LED               0                                                     // LED Pin. Although this is also the Rx pin
-#define   Vsense            A2                                                    // Voltage sensing (150ohm to 1K divider)
+#define   LED                         0                                           // LED Pin. Although this is also the Rx pin
+#define   Vsense                      A2                                          // Voltage sensing (150ohm to 1K divider)
 
 
 //--- Routines -------------------------------------------------------------------
@@ -73,7 +75,7 @@ char * float2s(float f, unsigned int digits);                                   
 void Beep_Motors(unsigned long Frequency, unsigned long Duration);                // Uses the motors as speakers to produce noise
 void PWM_PulseOut(int us);                                                        // A blocking function that outputs a pulse of duration us. 
 unsigned char Rolling_Avg(unsigned char *Buffer, unsigned char Value);            // UNFINISHED!
-char Get_Channel_From_EEPROM(char Read_Write, char New_Channel);
+char Get_Channel_From_EEPROM(char Read_Write, char New_Channel);                  // Writes or reads the current IR channel from/to EEPROM.
 
 #endif 
 
