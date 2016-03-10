@@ -4,8 +4,7 @@ To Do:
 1) Allow for single wire PPM input? -> hard
 2) Could add a moving avergae filter to the motors to reduce such harsh accelerations... -> medium
 3) Direct register writes for pin changes/reads etc -> easy
-4) ESC stops when in neutral - keep it going... -> easy
-5) Allow for 3 channel PCM input? to support yaw_setpoint with RF etc. -> hard
+4) Allow for 3 channel PCM input? to support yaw_setpoint with RF etc. -> hard
 
 Use of Peripherals:
   - Timer0 - delay(), millis(), micros()
@@ -99,9 +98,9 @@ volatile int            bit_index = 0;
 
 //--- Routines -------------------------------------------------------------------
 void setup_6050(void);                                                            // Initialises the DMP6050
-char PID_Routine(void);                                                           // Iterates PID algorithm if enough time has passed since last call and updates the PWM signals to the motors. Returns 1 if update performed
-char Process_PPM(void);                                                            // Validates and processes PPM signals received by the interrupt routines. Updates Yaw_setpoint. Returns 0 if no PPM signal. 
-char Process_IR(void);                                                             // Validates and processes IR signals recieved by the interrupt routines. Updates Yaw_setpoint. Returns 0 if no IR signal.
+void PID_Routine(void);                                                           // Iterates PID algorithm if enough time has passed since last call and updates the PWM signals to the motors.
+void Process_PPM(void);                                                            // Validates and processes PPM signals received by the interrupt routines. Updates Yaw_setpoint. Returns 0 if no PPM signal. 
+void Process_IR(void);                                                             // Validates and processes IR signals recieved by the interrupt routines. Updates Yaw_setpoint. Returns 0 if no IR signal.
 long Decode(void);                                                                // Decodes the Manchester encoded received IR Data
 void IR_OR_PWM(void);                                                             // Discovers whether we have an RF receiver or IR receiver connected at startup. The correct routines get called depending on this
 void Update_PID_Values(char Button_Info);                                         // Takes received data over IR and updates the PID values on the fly.
@@ -187,7 +186,7 @@ void setup()
     detachInterrupt(digitalPinToInterrupt(3));                                    // If No RF receiver attached disable the interrupts on these pins and use pin 3 for an ESC PWM signal
     PCMSK2 = 0b00000000; 
     pinMode(PWM_Pin, OUTPUT);
-    PWM_Pulse_Width = 1000;                                                       // Setting this to a value between 800-2000 enables the output
+    PWM_Pulse_Width = 1000;                                                       // Setting this to a value between 800-2000 enables the PWM output. 
     
     Beep_Motors(4000, 100);                                                       // Beep twice if IR being used (secondary control...)
     delay(100);
@@ -203,25 +202,21 @@ void loop() {
     while(1)  {
       if(!Low_Battery())  { 
         if(RF_Receiver_Connected) {                                             // If an RF receiver is connected take signals from this as it has better performance than an IR controller
-          if(Process_PPM() == VALID)  {                                         // Process_PPM() returns 1 if valid PPM data is being received
-          
-            ENABLE_MOTORS;                                                      // Ensure outputs are enabled and go on to update them
-            unsigned char Lout = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
-            unsigned char Rout = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
-            OCR1A = Lout;
-            OCR1B = Rout;
-          }              
+          Process_PPM(); 
+                                                               
+          unsigned char Lout = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
+          unsigned char Rout = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
+          OCR1A = Lout;
+          OCR1B = Rout;                        
         }
         else  {                                                                 // Otherwise we assume an IR receiver is connected. If it's not we shutdown the motors anyway
-          if(Process_IR() == VALID) {                                           // Process_IR() returns 1 if valid IR data is being received 
-            
-            ENABLE_MOTORS;                                                      // Ensure outputs are enabled and go on to update them
-            unsigned char Lout = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
-            unsigned char Rout = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
-            OCR1A = Lout;
-            OCR1B = Rout;              
-          }                
-        }
+          Process_IR();                                                   
+                      
+          unsigned char Lout = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
+          unsigned char Rout = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
+          OCR1A = Lout;
+          OCR1B = Rout;              
+        } 
       }
     }
   }          
@@ -229,13 +224,12 @@ void loop() {
   while (!mpuInterrupt && fifoCount < packetSize) {                             // wait for MPU interrupt or extra packet(s) available          
     if(!Low_Battery())  { 
       if(RF_Receiver_Connected) {                                               // If an RF receiver is connected take signals from this as it has better performance than an IR controller
-        if(Process_PPM() == VALID)                                              // Process_PPM() returns 1 if valid PPM data is being received 
-          PID_Routine();            
+        Process_PPM();                                             
+        PID_Routine();            
       }
       else  {                                                                   // Otherwise we assume an IR receiver is connected. If it's not we shutdown the motors anyway
-        if(Process_IR() == VALID) {                                             // Process_IR() returns 1 if valid IR data is being received 
-          PID_Routine();            
-        }                
+        Process_IR();                                             
+        PID_Routine();  
       }
     }         
   }             
@@ -270,7 +264,7 @@ void loop() {
 //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
 //#######################################################################################################################################################################
 //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
-char Process_PPM() 
+void Process_PPM() 
 {  
 // A few things about this routine:
 //  1) It's run every 38ms
@@ -288,12 +282,9 @@ char Process_PPM()
   if(millis() - Time_at_Motor_Update < PPM_UPDATE_PERIOD) { 
     if(No_Signal_PWM > NO_SIGNAL_THESHOLD_PWM || Neutral_Input_Count_PWM >= 25)  {
       DISABLE_MOTORS;
-      Yaw_setpoint = Yaw;
-      return(0);
-    }
-    else  {
-      return(1);  
-    }    
+      Yaw_setpoint = Yaw;      
+    }   
+    return;        
   }  
   Time_at_Motor_Update += PPM_UPDATE_PERIOD;                                              
 
@@ -343,7 +334,7 @@ char Process_PPM()
            
     OCR1A = 128;
     OCR1B = 128; 
-    return(0);
+    return;
   }   
 
   // 4) -----
@@ -358,19 +349,20 @@ char Process_PPM()
         digitalWrite(LED, !digitalRead(LED));      
       }     
        
-      return(0);                                                                  // Return with a zero to disable motor activity
+      return;                                                                     // Return with a zero to disable motor activity
     }   
   }
   else  {
     Neutral_Input_Count_PWM = 0; 
   }
-  
-  LED_ON;                                                                         // Turn LED on to indicate signal being received  
-  return(1);  
+
+  ENABLE_MOTORS;
+  LED_ON;                                                                         // Turn LED on to indicate signal being received ok and Enable the motors  
+  return;  
 }
 
 //--------------------------------------------------------------------------------
-char Process_IR() 
+void Process_IR() 
 { 
 // A few things about this routine:
 //  1) It's run every IR_UPDATE_PERIOD ms
@@ -386,12 +378,9 @@ char Process_IR()
   if(millis() - Time_at_Motor_Update < IR_UPDATE_PERIOD) { 
     if(No_Signal_IR > NO_SIGNAL_THESHOLD_IR || Neutral_Input_Count_IR >= 25)  {
       DISABLE_MOTORS;                                                      
-      Yaw_setpoint = Yaw;
-      return(0);
-    }
-    else  {
-      return(1);  
-    }    
+      Yaw_setpoint = Yaw;      
+    }        
+    return;         
   }  
   Time_at_Motor_Update += IR_UPDATE_PERIOD;                                      
   
@@ -441,7 +430,7 @@ char Process_IR()
     OCR1A = 128;
     OCR1B = 128; 
 
-    return(0);
+    return;
   }
 
   // 4) -----
@@ -456,15 +445,16 @@ char Process_IR()
         digitalWrite(LED, !digitalRead(LED));      
       }     
              
-      return(0);                                                                  // Return with a zero to disable motor activity
+      return;                                                                     // Return with a zero to disable motor activity
     }   
   }
   else  {
     Neutral_Input_Count_IR = 0; 
   }  
-  
-  LED_ON;                                                                         // Turn LED on to indicate signal being received ok  
-  return(1);  
+
+  ENABLE_MOTORS;                                                                  
+  LED_ON;                                                                         // Turn LED on to indicate signal being received ok and Enable the motors  
+  return;  
 }
 
 //--------------------------------------------------------------------------------
@@ -536,7 +526,7 @@ long Decode()
 }
 
 //--------------------------------------------------------------------------------
-char PID_Routine()
+void PID_Routine()
 {
 // So we need LfRghtPulseWdth to adjust itself according to how much error there is. Here's a little PID controller to do that. 
 // It uses the global variable, Yaw_Setpoint & needs FwdBckPulseWdth_Safe for speed control
@@ -549,46 +539,47 @@ char PID_Routine()
 
   delta_t = micros() - Time_at_Motor_Update;  
   if(delta_t < 10000)                                                             // Run this routine every 10ms
-    return(0); 
+    return; 
   Time_at_Motor_Update += 10000;                                                                                            
 
-  float Error, Output, dInput;
-  static float ErrorSum, LastYaw; 
-
-  if(Upside_Down()) {
-    float Inverted_Yaw_setpoint = 180.0 - Yaw_setpoint;
+  if(MOTORS_ENABLED)  {
+    float Error, Output, dInput;
+    static float ErrorSum, LastYaw; 
+  
+    if(Upside_Down()) {
+      float Inverted_Yaw_setpoint = 180.0 - Yaw_setpoint;
+      
+      if(Inverted_Yaw_setpoint >= 360.0)                                          // Keep Inverted_Yaw_setpoint within 0-360 limits
+          Inverted_Yaw_setpoint -= 360.0;    
+      else if(Inverted_Yaw_setpoint < 0.0) 
+          Inverted_Yaw_setpoint += 360.0;    
+            
+      FwdBckPulseWdth_Safe_Temp = -FwdBckPulseWdth_Safe_Temp;   
+      Error = -Turn_Error(Inverted_Yaw_setpoint, Yaw);
+      dInput = (LastYaw - Yaw) / delta_t;
+    }
+    else  {
+      Error = Turn_Error(Yaw_setpoint, Yaw); 
+      dInput = (Yaw - LastYaw) / delta_t;
+    }  
     
-    if(Inverted_Yaw_setpoint >= 360.0)                                            // Keep Inverted_Yaw_setpoint within 0-360 limits
-        Inverted_Yaw_setpoint -= 360.0;    
-    else if(Inverted_Yaw_setpoint < 0.0) 
-        Inverted_Yaw_setpoint += 360.0;    
-          
-    FwdBckPulseWdth_Safe_Temp = -FwdBckPulseWdth_Safe_Temp;   
-    Error = -Turn_Error(Inverted_Yaw_setpoint, Yaw);
-    dInput = (LastYaw - Yaw) / delta_t;
+    ErrorSum += (Error * Ki) * delta_t;                                           // delta_t ~= 10_000, Also "bumpless"                                                     
+    ErrorSum = constrain(ErrorSum, -100.0, 100.0);
+    
+    LastYaw = Yaw;
+    
+    Output = (Error * Kp) + ErrorSum - (dInput * Kd);
+    
+    LfRghtPulseWdth_Safe = round(Output);
+    LfRghtPulseWdth_Safe = constrain(LfRghtPulseWdth_Safe, -100, 100);
+   
+    static unsigned char BufferA[ROLLING_AVG_FILTER_LENGTH], IndexA;
+    static unsigned char BufferB[ROLLING_AVG_FILTER_LENGTH], IndexB; 
+    unsigned char  Lout = Rolling_Avg(BufferA, constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));       // Rolling_avg not actually implimented yet!  
+    unsigned char Rout = Rolling_Avg(BufferB, constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));         
+    OCR1A = Lout;
+    OCR1B = Rout;
   }
-  else  {
-    Error = Turn_Error(Yaw_setpoint, Yaw); 
-    dInput = (Yaw - LastYaw) / delta_t;
-  }  
-  
-  ErrorSum += (Error * Ki) * delta_t;                                             // delta_t ~= 10_000, Also "bumpless"                                                     
-  ErrorSum = constrain(ErrorSum, -100.0, 100.0);
-  
-  LastYaw = Yaw;
-  
-  Output = (Error * Kp) + ErrorSum - (dInput * Kd);
-  
-  LfRghtPulseWdth_Safe = round(Output);
-  LfRghtPulseWdth_Safe = constrain(LfRghtPulseWdth_Safe, -100, 100);
-
-  ENABLE_MOTORS;                                                                  // Ensure outputs are enabled 
-  static unsigned char BufferA[ROLLING_AVG_FILTER_LENGTH], IndexA;
-  static unsigned char BufferB[ROLLING_AVG_FILTER_LENGTH], IndexB; 
-  unsigned char  Lout = Rolling_Avg(BufferA, constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));       //Rolling_avg not actually implimented yet!  
-  unsigned char Rout = Rolling_Avg(BufferB, constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));         
-  OCR1A = Lout;
-  OCR1B = Rout;
 
   // Blocking code to generate a PWM pulse should PWM_Pulse_Width be in 800-2000 range. But this requires the PID algorithm to be called!
   if(PWM_Pulse_Width > 800) {
@@ -600,8 +591,6 @@ char PID_Routine()
         Toggle++;
     }      
   }   
-
-  return(1);
 }
 
 //--------------------------------------------------------------------------------

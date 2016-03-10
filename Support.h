@@ -43,6 +43,7 @@
 #define   PWM_PIN_HIGH                digitalWrite(PWM_Pin, HIGH)
 #define   PWM_PIN_LOW                 digitalWrite(PWM_Pin, LOW)
 
+#define   MOTORS_ENABLED              digitalRead(MEnble)
 #define   FWDBCKIN_STATE              digitalRead(FwdBckIn)
 #define   LFRGHTIN_STATE              digitalRead(LfRghtIn)
 #define   IR_IN_STATE                 digitalRead(IR_In)
