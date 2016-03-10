@@ -1,10 +1,6 @@
-
-
-
 #include "Support.h"
 #include "Arduino.h"
 #include <EEPROM.h>
-
 
 float Turn_Error(float Yaw_setpoint, float Yaw)
 {
@@ -190,32 +186,6 @@ void PWM_PulseOut(int us)
    PWM_PIN_HIGH;
    delayMicroseconds(us);
    PWM_PIN_LOW;
-}
-
-//--------------------------------------------------------------------------------
-unsigned char Rolling_Avg(unsigned char *Buffer, unsigned char Value)
-{
-  return(Value);
-  
-  char i;
-  
-  if(*Buffer == (ROLLING_AVG_FILTER_LENGTH - 1))                                      
-    *Buffer = 1;
-  else
-    *Buffer++;
-    
-  char old_value_index = *Buffer;                                                 // Use the first byte in the array to keep track of old_byte.
-  
-  Buffer += old_value_index;
-  *Buffer = Value;
-  Buffer -= old_value_index;
-  
-  int sum = 0;
-  for(i = 1;i < ROLLING_AVG_FILTER_LENGTH;i++)
-  {    
-    Buffer++;     
-    sum += *Buffer;   
-  }                                                      
 }
 
 //--------------------------------------------------------------------------------

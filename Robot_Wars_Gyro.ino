@@ -2,8 +2,13 @@
  *  
 To Do:
 1) Allow for single wire PPM input? -> hard/not important.
-2) Could add a moving avergae filter to the motors to reduce such harsh accelerations... -> medium
-3) Allow for 3 channel PCM input? to support yaw_setpoint with RF etc. -> hard/important for other people.
+2) Allow for 3 channel PCM input? to support yaw_setpoint with RF etc. -> hard/important for other people.
+
+Bugs. When writing new PID values to EEPROM, turning off the signal casues a write. GMC doesn't seem to wake up again...
+
+  - Test current draw.
+  - Test whether ESC stuff is working ok and whether it works through the resistors etc.
+  - Test RF stuff
 
 Use of Peripherals:
   - Timer0 - delay(), millis(), micros()
@@ -29,7 +34,9 @@ Description:
   
   - PWM pulsewidths are measured using pinchange interrupts on each channel and the micros() function
   - IR data is read using pinchange interrupts and timer2. It expects manchester encoded data with a bit period of 0.8ms 
-   (1 start bit, 8 Yaw_Setpoint bits, 8 Speed bits followed by 4 info bits). It's very robust to spikes and errors.
+   (1 start bit, 8 Yaw_Setpoint bits, 8 Speed bits followed by 4 info bits). It's very robust to spikes and errors. It can
+   support 2 different channels by looking at the start bit high time. As long as the both transmitters don't send data literally at the
+   same time as each other then this Rx algorithm should latch on and sync with it's own channel.
    
   There is low battery detection (works for 1S or 2S LiPos) and LED indication of various states:
     - Low battery
@@ -43,6 +50,7 @@ Description:
 #include "MPU6050_6Axis_MotionApps20.h"
 #include <EEPROM.h>
 #include "Support.h"
+#include "Average.h"
 
 //--- IMU6050 Specific: ----------------------------------------------------------
 MPU6050 mpu;
@@ -72,21 +80,20 @@ float Kp;                                                                       
 float Ki;                                                                         // 1.0e-7 Represents: An error of 90 degrees contributes to 9 to the output per second
 float Kd;                                                                         // 1.0e5  Represents: Rotating at 90 degree/second contributes -9 to the output    
 
-volatile long FwdBckPulseWdth;                                                    // The interrupt routines continously update these whenever a new PPM signal is received (hence volatile!)
-volatile long LfRghtPulseWdth;
-volatile long AuxPulseWdth;
+float Yaw, Yaw_setpoint;                                                          // The measured Yaw and the desired Yaw provided by the user's stick movements (respectively)
+
+char RF_Receiver_Connected;                                                       // Gets set by calling the IR_OR_PWM() function at start up. 0 for IR, 1 for 2 channel RF, 2 for 3 channel RF.
+
+char IR_Channel = 1;                                                              // Channels 0 or 1 are supported. 
+int PWM_Pulse_Width = 0;                                                          // If this is set at any point to be between 800-2000, the GMC starts outputing PWM pulses every 20ms of this length
 
 long FwdBckPulseWdth_Safe;                                                        // The Process_PPM routine saves the volatile versions above to these safe copies for later modification and use  
 long LfRghtPulseWdth_Safe;
 long AuxPulseWdth_Safe;
 
-float Yaw, Yaw_setpoint;                                                          // The measured Yaw and the desired Yaw provided by the user's stick movements (respectively)
-
-char RF_Receiver_Connected;
-
-char IR_Channel = 1;
-int PWM_Pulse_Width = 0;                                                          // If this is set at any point to be between 800-2000, the GMC starts outputing PWM pulses every 20ms of this length
-VectorFloat Gravity_at_Startup;                                                   // [x, y, z] gravity vector
+volatile long FwdBckPulseWdth;                                                    // The interrupt routines continously update these whenever a new PPM signal is received (hence volatile!)
+volatile long LfRghtPulseWdth;
+volatile long AuxPulseWdth;
 
 //--- IR Related:
 volatile unsigned long  Total_Time_High;                                          // Measures the time spent high during a bit_period. If Total_Time_High > 1/2 * Bit period we assume a 1 was sent. Filters spikes
@@ -96,6 +103,11 @@ volatile unsigned long  Encoded_Data[2];
 volatile boolean        Decode_Flag;
 volatile boolean        State;
 volatile int            bit_index = 0;
+
+//--- Class based globals:
+VectorFloat Gravity_at_Startup;                                                   // [x, y, z] gravity vector
+Average Filter1(ROLLING_AVG_FILTER_LENGTH);
+Average Filter2(ROLLING_AVG_FILTER_LENGTH);
 
 //--- Routines -------------------------------------------------------------------
 void setup_6050(void);                                                            // Initialises the DMP6050
@@ -276,12 +288,12 @@ void Process_PPM()
   // 1) -----  
   static int LfRghtPulse;
   static int FwdBckPulse;
-  static int Neutral_Input_Count_PWM = 25;
+  static int Neutral_Input_Count_PWM = NEUTRAL_THRESHOLD_COUNT; 
   static unsigned long Time_at_Motor_Update; 
   static int No_Signal_PWM = NO_SIGNAL_THESHOLD_PWM;                              // Assume no signal at startup
   
   if(millis() - Time_at_Motor_Update < PPM_UPDATE_PERIOD) { 
-    if(No_Signal_PWM > NO_SIGNAL_THESHOLD_PWM || Neutral_Input_Count_PWM >= 25)  {
+    if(No_Signal_PWM > NO_SIGNAL_THESHOLD_PWM || Neutral_Input_Count_PWM >= NEUTRAL_THRESHOLD_COUNT)  {
       DISABLE_MOTORS;
       Yaw_setpoint = Yaw;      
     }   
@@ -346,7 +358,7 @@ void Process_PPM()
   if(abs(LfRghtPulseWdth_Safe) <= 10 && abs(FwdBckPulseWdth_Safe) <= 10) {        // If control sticks are in their neurtal position...
     Neutral_Input_Count_PWM++;
     
-    if(Neutral_Input_Count_PWM >= 25) {
+    if(Neutral_Input_Count_PWM >= NEUTRAL_THRESHOLD_COUNT) {
       Yaw_setpoint = Yaw;
       DISABLE_MOTORS;
       
@@ -376,12 +388,12 @@ void Process_IR()
 //  4) If the joysticks go still for a while, idle.   
 
   // 1) ----- 
-  static int Neutral_Input_Count_IR = 25;
+  static int Neutral_Input_Count_IR = NEUTRAL_THRESHOLD_COUNT;
   static unsigned long Time_at_Motor_Update; 
   static int No_Signal_IR = NO_SIGNAL_THESHOLD_IR;                                // Assume no signal at start up
   
   if(millis() - Time_at_Motor_Update < IR_UPDATE_PERIOD) { 
-    if(No_Signal_IR > NO_SIGNAL_THESHOLD_IR || Neutral_Input_Count_IR >= 25)  {
+    if(No_Signal_IR > NO_SIGNAL_THESHOLD_IR || Neutral_Input_Count_IR >= NEUTRAL_THRESHOLD_COUNT)  {
       DISABLE_MOTORS;                                                      
       Yaw_setpoint = Yaw;      
     }        
@@ -404,7 +416,7 @@ void Process_IR()
 
       // The last 4 bits of the packet contain info on whether to spin the ESC, change channel, or change the PID parameters etc the 4th bit will be for ESC control
       static char Button_Toggle_Flag;      
-      if((IR_Data & 0xF == 0xF) && !Button_Toggle_Flag) {                         // If All the buttons are pressed, change the channel - should be obvious since we'll loose signal from current transmitter!
+      if(((IR_Data & 0xF) == 0xF) && !Button_Toggle_Flag) {                       // If All the buttons are pressed, change the channel - should be obvious since we'll loose signal from current transmitter!
         Button_Toggle_Flag = 1;
         IR_Channel = Get_Channel_From_EEPROM(EEPROM_WRITE, !IR_Channel);        
       }
@@ -439,7 +451,7 @@ void Process_IR()
   if(abs(LfRghtPulseWdth_Safe) <= 10 && abs(FwdBckPulseWdth_Safe) <= 10) {        // If control sticks are in their neurtal position...
     Neutral_Input_Count_IR++;
     
-    if(Neutral_Input_Count_IR >= 25) {
+    if(Neutral_Input_Count_IR >= NEUTRAL_THRESHOLD_COUNT) {
       Yaw_setpoint = Yaw;
       DISABLE_MOTORS;
       
@@ -573,14 +585,10 @@ void PID_Routine()
     Output = (Error * Kp) + ErrorSum - (dInput * Kd);
     
     LfRghtPulseWdth_Safe = round(Output);
-    LfRghtPulseWdth_Safe = constrain(LfRghtPulseWdth_Safe, -100, 100);
-   
-    static unsigned char BufferA[ROLLING_AVG_FILTER_LENGTH], IndexA;
-    static unsigned char BufferB[ROLLING_AVG_FILTER_LENGTH], IndexB; 
-    unsigned char  Lout = Rolling_Avg(BufferA, constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));       // Rolling_avg not actually implimented yet!  
-    unsigned char Rout = Rolling_Avg(BufferB, constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));         
-    OCR1A = Lout;
-    OCR1B = Rout;
+    LfRghtPulseWdth_Safe = constrain(LfRghtPulseWdth_Safe, -100, 100);    
+         
+    OCR1A = Filter1.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));
+    OCR1B = Filter2.Rolling_Average(constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));
   }
 
   // Blocking code to generate a PWM pulse should PWM_Pulse_Width be in 800-2000 range. But this requires the PID algorithm to be called!

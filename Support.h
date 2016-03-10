@@ -4,14 +4,16 @@
 
 //--- Defines: -------------------------------------------------------------------
 // User adjustable:
+#define   ROLLING_AVG_FILTER_LENGTH   4                                           // Rolling average filter length. smooths acceleration of motors.
 #define   EXPECTED_BITS               20                                          // For IR receiving. The number of bits we expect to receive
 
 #define   NO_SIGNAL_THESHOLD_PWM      10                                          // Number of erronous PPM signals received before we deduce no signal is being received
 #define   NO_SIGNAL_THESHOLD_IR       10                                          // Number of erronous PPM signals received before we deduce no signal is being received
+#define   NEUTRAL_THRESHOLD_COUNT     20
 
 #define   MOTOR_BEEP_AMPLITUDE        100                                         // 0 - 125 full range 
 #define   ROLLING_AVG_FILTER_LENGTH   5
-#define   IR_UPDATE_PERIOD            50
+#define   IR_UPDATE_PERIOD            38
 #define   PPM_UPDATE_PERIOD           38
 
 //--- Low_Battery() related constants:
@@ -67,15 +69,16 @@
 #define   LED                         0                                           // LED Pin. Although this is also the Rx pin
 #define   Vsense                      A2                                          // Voltage sensing (150ohm to 1K divider)
 
-
 //--- Routines -------------------------------------------------------------------
 float Turn_Error(float, float);                                                   // From the Yaw & Yaw_setpoint, this routine returns how many degrees we are from where we want to be. 
 int Low_Battery(void);                                                            // Returns 0 if battery is sufficiently charged, 1 otherwise. Includes hysterisis & LED flashing for low battery (Non-blocking)
 char * float2s(float f, unsigned int digits);                                     // Converts a float to a string in standard form
 void Beep_Motors(unsigned long Frequency, unsigned long Duration);                // Uses the motors as speakers to produce noise
 void PWM_PulseOut(int us);                                                        // A blocking function that outputs a pulse of duration us. 
-unsigned char Rolling_Avg(unsigned char *Buffer, unsigned char Value);            // UNFINISHED!
 char Get_Channel_From_EEPROM(char Read_Write, char New_Channel);                  // Writes or reads the current IR channel from/to EEPROM.
+
+//--- Classes --------------------------------------------------------------------
+
 
 #endif 
 
