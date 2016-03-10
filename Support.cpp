@@ -3,9 +3,7 @@
 
 #include "Support.h"
 #include "Arduino.h"
-
-
-
+#include <EEPROM.h>
 
 
 float Turn_Error(float Yaw_setpoint, float Yaw)
@@ -219,6 +217,31 @@ unsigned char Rolling_Avg(unsigned char *Buffer, unsigned char Value)
     sum += *Buffer;   
   }                                                      
 }
+
+//--------------------------------------------------------------------------------
+char Get_Channel_From_EEPROM(char Read_Write, char New_Channel)
+{
+// If Read_Write = 1 this routine writes New_Channel value to EEPROM, if 0 it returns the current channel number
+  char return_val;
+  New_Channel = constrain(New_Channel, 0, 1);
+  
+  if(Read_Write)
+  {
+    EEPROM.put(12, New_Channel);
+    return_val = New_Channel;
+  }
+  else
+  {
+    EEPROM.get(12, return_val);   
+  }
+  
+  return(return_val);  
+}
+
+
+
+
+
 
 
 

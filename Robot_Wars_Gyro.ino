@@ -4,9 +4,8 @@ To Do:
 1) Allow for single wire PPM input? -> hard
 2) Could add a moving avergae filter to the motors to reduce such harsh accelerations... -> medium
 3) Direct register writes for pin changes/reads etc -> easy
-4) Channel switching on the fly/or just in sortware at least. -> easy
-5) ESC stops when in neutral - keep it going... -> easy
-6) Allow for 3 channel PCM input? to support yaw_setpoint with RF etc. -> hard
+4) ESC stops when in neutral - keep it going... -> easy
+5) Allow for 3 channel PCM input? to support yaw_setpoint with RF etc. -> hard
 
 Use of Peripherals:
   - Timer0 - delay(), millis(), micros()
@@ -85,6 +84,7 @@ float Yaw, Yaw_setpoint;                                                        
 
 char RF_Receiver_Connected;
 
+char IR_Channel = 1;
 int PWM_Pulse_Width = 0;                                                          // If this is set at any point to be between 800-2000, the GMC starts outputing PWM pulses every 20ms of this length
 VectorFloat Gravity_at_Startup;                                                   // [x, y, z] gravity vector
 
@@ -111,21 +111,24 @@ char Upside_Down();                                                             
 //--- Setup: ---------------------------------------------------------------------
 void setup() 
 {  
+  // Uncommenting this enables storage of channel in EEPROM which can be annoying...
+  //IR_Channel = Get_Channel_From_EEPROM(EEPROM_READ, 0);                           // Get channel we're supposed to on. Can be changed by pressing A, B & Z buttons all at the same time on the GC controller
+                                                                                    
   // Read PID values from EEPROM.
-  Access_EEPROM(0);
+  Access_EEPROM(EEPROM_READ);
 
   // If the values are ridiculous we assume they haven't been written into EEPROM yet so we set them to defaults and burn them in
   if(Kp <= 0.0 || Kp >= 5.0)  {
     Kp = 1.20f; Ki = 2.0e-7f; Kd = 5.0e4f;
-    Access_EEPROM(1);
+    Access_EEPROM(EEPROM_WRITE);
   }
   if(Ki >= 4.0e-6)  {
     Kp = 1.20f; Ki = 2.0e-7f; Kd = 5.0e4f;
-    Access_EEPROM(1);
+    Access_EEPROM(EEPROM_WRITE);
   }
   if(Kd >= 2.0e6)  {
     Kp = 1.20f; Ki = 2.0e-7f; Kd = 5.0e4f;
-    Access_EEPROM(1);
+    Access_EEPROM(EEPROM_WRITE);
   }
     
   // On startup send to the serial port the current PID parameters. There are 10K resistors so no damage will be done if an RF receiver is attached
@@ -409,8 +412,19 @@ char Process_IR()
       LfRghtPulseWdth_Safe = round((Yaw_setpoint - Old_Yaw_setpoint) * 5.0);      // Incase the Gyro chip isn't populated this still allows for IR robot control
       Old_Yaw_setpoint = Yaw_setpoint;
 
-      // The last 4 bits of the packet contain info on whether to spin the ESC, or change the PID parameters etc the 4th bit will be for ESC control        
-      Update_PID_Values(IR_Data & 0x7);
+      // The last 4 bits of the packet contain info on whether to spin the ESC, change channel, or change the PID parameters etc the 4th bit will be for ESC control
+      static char Button_Toggle_Flag;      
+      if((IR_Data & 0xF == 0xF) && !Button_Toggle_Flag) {                         // If All the buttons are pressed, change the channel - should be obvious since we'll loose signal from current transmitter!
+        Button_Toggle_Flag = 1;
+        IR_Channel = Get_Channel_From_EEPROM(EEPROM_WRITE, !IR_Channel);        
+      }
+      else if(IR_Data & 0xF) {                                                    // If there's data in the info bits...
+        Update_PID_Values(IR_Data & 0x7);
+        // Spin weapon ie. update pwm_pulsewidth etc...        
+      }
+      else  {
+        Button_Toggle_Flag = 0;
+      }
     }
     else  
       No_Signal_IR++;                                                             // If the data packet was empty which occurs if there was an error etc, increase no signal count          
@@ -422,7 +436,7 @@ char Process_IR()
   if(No_Signal_IR > NO_SIGNAL_THESHOLD_IR)  {     
     LED_OFF;                                                                      // Turn LED off if no signal is being received
     DISABLE_MOTORS;                                                               // Disable outputs  
-    Access_EEPROM(1);                                                             // Write PID parameters to EEPROM if they have been updated.
+    Access_EEPROM(EEPROM_WRITE);                                                  // Write PID parameters to EEPROM if they have been updated.
 
     OCR1A = 128;
     OCR1B = 128; 
@@ -766,23 +780,26 @@ ISR (TIMER2_COMPA_vect)                                                         
 
     if(bit_index == (EXPECTED_BITS * 2))                                          // If this is the first bit... 
     {
-      if(Total_Time_High > 475 && Total_Time_High < 625)  {                       // Channel 1 start bits are ~600us long. COULD NARROW THESE WONDOWS DOWN SOMEWHAT.
-        Total_Time_High = 0;
-        OCR2A = 49;                                                               // Interrupt every 400us from now until the end of the packet.
-        return;
-      }
-      else if (Total_Time_High > 175 && Total_Time_High < 325)  {                 // Channel 2 start bits are ~250us long. COULD NARROW THESE WONDOWS DOWN SOMEWHAT.
-        Total_Time_High = 0;
-        OCR2A = 49;                                                               // Interrupt every 400us from now until the end of the packet.
-        return;
+      if(IR_Channel)  {                                                           
+        if(Total_Time_High > 475 && Total_Time_High < 625)  {                     // Channel 1 start bits are ~600us long. COULD NARROW THESE WONDOWS DOWN SOMEWHAT.
+          Total_Time_High = 0;
+          OCR2A = 49;                                                             // Interrupt every 400us from now until the end of the packet.
+          return;
+        }
       }
       else  {
-        bit_index = 0;                                                            // Cancel this receive and search for start bit again.
-        Total_Time_High = 0;
-        TIMSK2 = 0b00000000;                                                      // Disable OCR2A interrupts      
-        TimeA -= 19000;                                                           // Wait for only 1ms before searching for starts again.
-        return;
+        if (Total_Time_High > 175 && Total_Time_High < 325)  {                    // Channel 2 start bits are ~250us long. COULD NARROW THESE WONDOWS DOWN SOMEWHAT.
+          Total_Time_High = 0;
+          OCR2A = 49;                                                             // Interrupt every 400us from now until the end of the packet.
+          return;
+        }
       }
+      
+      bit_index = 0;                                                              // Cancel this receive and search for start bit again.
+      Total_Time_High = 0;
+      TIMSK2 = 0b00000000;                                                        // Disable OCR2A interrupts      
+      TimeA -= 19000;                                                             // Wait for only 1ms before searching for starts again.
+      return;      
     }    
 
     if(bit_index > 31)  {

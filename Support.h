@@ -3,13 +3,29 @@
 
 
 //--- Defines: -------------------------------------------------------------------
+// User adjustable:
 #define   EXPECTED_BITS               20                                          // For IR receiving. The number of bits we expect to receive
 
 #define   NO_SIGNAL_THESHOLD_PWM      10                                          // Number of erronous PPM signals received before we deduce no signal is being received
 #define   NO_SIGNAL_THESHOLD_IR       10                                          // Number of erronous PPM signals received before we deduce no signal is being received
 
+#define   MOTOR_BEEP_AMPLITUDE        100                                         // 0 - 125 full range 
+#define   ROLLING_AVG_FILTER_LENGTH   5
+#define   IR_UPDATE_PERIOD            50
+#define   PPM_UPDATE_PERIOD           38
+
+//--- Low_Battery() related constants:
+#define   VOLTAGE_SENSE_CONSTANT      10.08                                       // 24.71; - This is the value for the Green LED GMC that I built 1st
+#define   BATTERY_THRESHOLD_LOW_2S    6300                                        // If voltage falls below this, enter sleep
+#define   BATTERY_THRESHOLD_HGH_2S    7000                                        // If voltage rises above this, turn active again
+#define   BATTERY_THRESHOLD_LOW_1S    3150                                        // If voltage falls below this, enter sleep
+#define   BATTERY_THRESHOLD_HGH_1S    3500                                        // If voltage rises above this, turn active again
+
+// Non adjustable:
 #define   VALID                       1
 #define   INVALID                     0
+#define   EEPROM_READ                 0
+#define   EEPROM_WRITE                1
 
 #define   IR_PACKET_SEARCH_ENABLED    PCMSK0
 #define   ENABLE_IR_PACKET_SEARCH     0b00001000
@@ -30,20 +46,6 @@
 #define   FWDBCKIN_STATE              digitalRead(FwdBckIn)
 #define   LFRGHTIN_STATE              digitalRead(LfRghtIn)
 #define   IR_IN_STATE                 digitalRead(IR_In)
-
-#define   MOTOR_BEEP_AMPLITUDE        100                                         // 0 - 125 full range 
-#define   ROLLING_AVG_FILTER_LENGTH   5
-#define   IR_UPDATE_PERIOD            50
-#define   PPM_UPDATE_PERIOD           38
-
-
-//--- Low_Battery() related constants:
-#define   VOLTAGE_SENSE_CONSTANT      10.08                                       // 24.71; - This is the value for the Green LED GMC that I built 1st
-#define   BATTERY_THRESHOLD_LOW_2S    6300                                        // If voltage falls below this, enter sleep
-#define   BATTERY_THRESHOLD_HGH_2S    7000                                        // If voltage rises above this, turn active again
-#define   BATTERY_THRESHOLD_LOW_1S    3150                                        // If voltage falls below this, enter sleep
-#define   BATTERY_THRESHOLD_HGH_1S    3500                                        // If voltage rises above this, turn active again
-
 
 //--- Pin definitions: -----------------------------------------------------------
 #define   PWM_Pin           3                                                     // Output PWM, used if IR detected and hence FwdBckIn not being used etc
@@ -70,7 +72,7 @@ char * float2s(float f, unsigned int digits);                                   
 void Beep_Motors(unsigned long Frequency, unsigned long Duration);                // Uses the motors as speakers to produce noise
 void PWM_PulseOut(int us);                                                        // A blocking function that outputs a pulse of duration us. 
 unsigned char Rolling_Avg(unsigned char *Buffer, unsigned char Value);            // UNFINISHED!
-
+char Get_Channel_From_EEPROM(char Read_Write, char New_Channel);
 
 #endif 
 
