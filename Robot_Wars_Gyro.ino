@@ -4,11 +4,15 @@ To Do:
 1) Allow for single wire PPM input? -> hard/not important.
 2) Allow for 3 channel PCM input? to support yaw_setpoint with RF etc. -> hard/important for other people.
 
-Bugs. When writing new PID values to EEPROM, turning off the signal casues a write. GMC doesn't seem to wake up again...
+Bugs:
+ - When writing new PID values to EEPROM, turning off the signal casues a write. GMC doesn't seem to wake up again...
+ - Perhaps make it harder to change channel...
 
+Analysis:
   - Test current draw.
   - Test whether ESC stuff is working ok and whether it works through the resistors etc.
   - Test RF stuff
+  
 
 Use of Peripherals:
   - Timer0 - delay(), millis(), micros()
@@ -51,6 +55,8 @@ Description:
 #include <EEPROM.h>
 #include "Support.h"
 #include "Average.h"
+
+#define  _REVERSE_IR_FWBK_AND_LFRT_                                               // Reverse channels - BIG HERO 6 NEEDS THIS!
 
 //--- IMU6050 Specific: ----------------------------------------------------------
 MPU6050 mpu;
@@ -280,7 +286,7 @@ void loop() {
 void Process_PPM() 
 {  
 // A few things about this routine:
-//  1) It's run every 38ms
+//  1) It's run every PPM_UPDATE_PERIOD ms
 //  2) It validates PPM data on Ch1 & Ch2 
 //  3) Turns LED on to indiciate circuit is receiving valid PPM from receiver     
 //  4) If Sticks are in their neutral position for > 1 second, set Yaw_Setpoint = Yaw & stop motors
@@ -405,9 +411,15 @@ void Process_IR()
     unsigned long IR_Data = Decode();                                             // Decode the data
     if(IR_Data)   {                                                               // If The data contains valid information clear the no signal count and extract the info
       No_Signal_IR = 0;
-      
-      Yaw_setpoint = (float)map(((IR_Data >> 12) & 0xFF), 0, 255, 0, 359);
-      FwdBckPulseWdth_Safe = ((IR_Data >> 4) & 0xFF) - 128;
+
+      #ifndef _REVERSE_IR_FWBK_AND_LFRT_
+        Yaw_setpoint = (float)map(((IR_Data >> 12) & 0xFF), 0, 255, 0, 359);
+        FwdBckPulseWdth_Safe = ((IR_Data >> 4) & 0xFF) - 128; 
+      #else
+        Yaw_setpoint = (float)map(((IR_Data >> 4) & 0xFF), 0, 255, 0, 359);
+        FwdBckPulseWdth_Safe = ((IR_Data >> 12) & 0xFF) - 128;  
+      #endif    
+
       FwdBckPulseWdth_Safe = (FwdBckPulseWdth_Safe * 3) / 4; 
        
       static float Old_Yaw_setpoint;
@@ -545,7 +557,7 @@ void PID_Routine()
 // So we need LfRghtPulseWdth to adjust itself according to how much error there is. Here's a little PID controller to do that. 
 // It uses the global variable, Yaw_Setpoint & needs FwdBckPulseWdth_Safe for speed control
 // We deduce whether the device has been flipped by comparing the current gravity vector against the startup gravity vector. If their dot product
-// is -ve we've been flipped. In this case we need to ?? 1) Error = -Error 2) LfRghtPulseWdth_Safe = -LfRghtPulseWdth_Safe etc....
+// is -ve we've been flipped. In this case we need to make just a few alterations to the inputs...
 
   static unsigned long Time_at_Motor_Update;
   long FwdBckPulseWdth_Safe_Temp = FwdBckPulseWdth_Safe;
@@ -591,14 +603,17 @@ void PID_Routine()
     OCR1B = Filter2.Rolling_Average(constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));
   }
 
-  // Blocking code to generate a PWM pulse should PWM_Pulse_Width be in 800-2000 range. But this requires the PID algorithm to be called!
+  // Blocking code to generate a PWM pulse should PWM_Pulse_Width be in 800-2000 range. But this requires the PID algorithm to be called! MUST BE USING IR!  
   if(PWM_Pulse_Width > 800) {
     if(PWM_Pulse_Width < 2000) {
       static char Toggle = 0;
-      if(Toggle--)  
-        PWM_PulseOut(PWM_Pulse_Width);                                            // We only send the pulse every other call to this function ie. every ~20ms
-      else
-        Toggle++;
+      if(Toggle == 0) {
+        Toggle = 1;
+        PWM_PulseOut(PWM_Pulse_Width);
+      }
+      else {
+        Toggle = 0;
+      }
     }      
   }   
 }
