@@ -183,6 +183,7 @@ void Beep_Motors(unsigned long Frequency, unsigned long Duration)
 //--------------------------------------------------------------------------------
 void PWM_PulseOut(int us)
 {
+   pinMode(PWM_Pin, OUTPUT);
    PWM_PIN_HIGH;
    delayMicroseconds(us);
    PWM_PIN_LOW;

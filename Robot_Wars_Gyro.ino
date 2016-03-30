@@ -411,15 +411,9 @@ void Process_IR()
     unsigned long IR_Data = Decode();                                             // Decode the data
     if(IR_Data)   {                                                               // If The data contains valid information clear the no signal count and extract the info
       No_Signal_IR = 0;
-
-      #ifndef _REVERSE_IR_FWBK_AND_LFRT_
-        Yaw_setpoint = (float)map(((IR_Data >> 12) & 0xFF), 0, 255, 0, 359);
-        FwdBckPulseWdth_Safe = ((IR_Data >> 4) & 0xFF) - 128; 
-      #else
-        Yaw_setpoint = (float)map(((IR_Data >> 4) & 0xFF), 0, 255, 0, 359);
-        FwdBckPulseWdth_Safe = ((IR_Data >> 12) & 0xFF) - 128;  
-      #endif    
-
+      
+      Yaw_setpoint = (float)map(((IR_Data >> 12) & 0xFF), 0, 255, 0, 359);
+      FwdBckPulseWdth_Safe = ((IR_Data >> 4) & 0xFF) - 128;
       FwdBckPulseWdth_Safe = (FwdBckPulseWdth_Safe * 3) / 4; 
        
       static float Old_Yaw_setpoint;
@@ -598,9 +592,14 @@ void PID_Routine()
     
     LfRghtPulseWdth_Safe = round(Output);
     LfRghtPulseWdth_Safe = constrain(LfRghtPulseWdth_Safe, -100, 100);    
-         
-    OCR1A = Filter1.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));
-    OCR1B = Filter2.Rolling_Average(constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));
+
+    #ifndef _REVERSE_IR_FWBK_AND_LFRT_         
+      OCR1A = Filter1.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));
+      OCR1B = Filter2.Rolling_Average(constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));
+    #else
+      OCR1A = Filter1.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));
+      OCR1B = Filter2.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp - LfRghtPulseWdth_Safe, 0, 255));
+    #endif
   }
 
   // Blocking code to generate a PWM pulse should PWM_Pulse_Width be in 800-2000 range. But this requires the PID algorithm to be called! MUST BE USING IR!  
