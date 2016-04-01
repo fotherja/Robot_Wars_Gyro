@@ -1,6 +1,10 @@
 # Project Overview
 This is the Arduino code for the Gyro Motor Controller (GMC): A gyro stabilised mixer for small DC powered robots. The GMC allows for signals to be received either by conventional RF by connecting it to an RF receiver, or via Infra-Red by attachment of a IR receiver module that directly mounts on the board. 
 
+<p align="center">
+  <img src="http://www.jamesfotherby.com/Images/Robot_Wars/Whole_Circuit.JPG" width="60%">
+</p>
+
 # Features:
  - Automatic detection of RF or IR connectivity
  - Automatic detection of 2 channel, 3 channel, or [PPM] in the case of RF control
@@ -8,6 +12,8 @@ This is the Arduino code for the Gyro Motor Controller (GMC): A gyro stabilised 
  - PID algorithm to reach the Yaw_setpoint as fast as possible - can be tuned on the fly via IR
  - A PCM output channel to control a servo or ESC when using IR
  - 2 IR channels supported on the same IR frequency
+ - 5v output to supply an RF receiver
+ - 2 x 3A Motor channels
 
 # Further Discussion:
 If only 2 RF channels are connected one channel is used for speed control and the other is used to set the turn rate. If 3 channels are connected Joystick style turning is possible (whereby the robot points in the same direction as a 2 axis joystick).
@@ -25,3 +31,4 @@ The IR transmitter code is available at https://github.com/fotherja/Robot_Wars_I
  - LED Off            - No signal being received
 
 Further to this, the attached motors will beep once if RF control has been detected and twice for IR
+
