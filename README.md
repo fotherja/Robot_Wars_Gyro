@@ -44,13 +44,13 @@ If RF mode is used, interrupts on each of the connected channels measure the pul
 If IR mode is used, when the start of a packet is detected a timer is started which interrupts every sub-bit in the manchester encoded signal. If the average high time > average low time for the previous sub-bit then we deduce a 1 was sent. This is repeated until the entire packet has been received. The sub-bit string is then decoded to extract the data. 10 = 1, 01 = 0, anything else must be erronous. Searching for the start bit only occurs a couple of ms before the next start bit is due to arrive reducing the chances of a accidental packet receive process being launched. 
 
 each bit period is 0.8ms but this includes 2 sub-bits of the manchester code:
-                                                1                        0
-                                        --------                          --------
-                                                |                        |  
-                                                |                        |
-                                                |                        |
-                                                 --------        --------
-                                        <-----0.8ms------>       <-----0.8ms------> 
+.                                                1                        0
+.                                        --------                          --------
+.                                                |                        |  
+.                                                |                        |
+.                                                |                        |
+.                                                 --------        --------
+.                                        <-----0.8ms------>       <-----0.8ms------> 
     
 Mancester encoding is good for the IR receive modules, it's good for error detection, and hence this is why it was chosen. Currrently the packet period is 40ms, the half bit period is 400us. The start bit is 200/600us for ch 1, or 600/200us for ch 2, and all together there is 21 bits (16.8ms): 1 start, 8 Yaw_setpoint, 8 speed, 4 button bits. 2 channels are supported by interlacing packets for each robot between each other.
 
