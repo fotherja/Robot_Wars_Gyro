@@ -1,5 +1,7 @@
 #include "Support.h"
 #include "Arduino.h"
+#include <avr/power.h>
+#include <avr/sleep.h>
 #include <EEPROM.h>
 
 float Turn_Error(float Yaw_setpoint, float Yaw)
@@ -64,11 +66,13 @@ float Turn_Error(float Yaw_setpoint, float Yaw)
 int Low_Battery()
 {
 // Returns 0 if battery is sufficiently charged, 1 otherwise. Looks complicated because it also has hysterisis and fast flashes the LED to indicate the problem
+// If there has been low power for 30 seconds we enter a non-recoverable low power sleep mode.
   
   static unsigned long Time_at_LED_Change = 0;  
+  static long Time_When_Last_Had_Power = millis();
   static bool Low_Battery_Flag = 0;
   
-  float BVoltage = analogRead(Vsense) * VOLTAGE_SENSE_CONSTANT;                   //Convert to millivolts
+  float BVoltage = analogRead(Vsense) * VOLTAGE_SENSE_CONSTANT;                   // Convert to millivolts
 
   // This section only runs the first time this routine is called. It detects how many cells the battery is made of
   static char Number_Of_Cells = 0;
@@ -82,10 +86,12 @@ int Low_Battery()
   if(Number_Of_Cells == 2)  {
     if(BVoltage > BATTERY_THRESHOLD_LOW_2S && !Low_Battery_Flag)
       {
+        Time_When_Last_Had_Power = millis();                                    
         return(0);
       }
     if(BVoltage > BATTERY_THRESHOLD_HGH_2S)
       {
+        Time_When_Last_Had_Power = millis();
         Low_Battery_Flag = 0;
         return(0);
       }
@@ -93,25 +99,60 @@ int Low_Battery()
   else  {
     if(BVoltage > BATTERY_THRESHOLD_LOW_1S && !Low_Battery_Flag)
       {
+        Time_When_Last_Had_Power = millis();
         return(0);
       }
     if(BVoltage > BATTERY_THRESHOLD_HGH_1S)
       {
+        Time_When_Last_Had_Power = millis();
         Low_Battery_Flag = 0;
         return(0);
       } 
   }   
 
   Low_Battery_Flag = 1;  
-  DISABLE_MOTORS;                                                                 //Disable all outputs
+  DISABLE_MOTORS;                                                                 // Disable all outputs
 
   if(millis() - Time_at_LED_Change > 100)
   {
     digitalWrite(LED, !digitalRead(LED));                                         // Flash LED
     Time_at_LED_Change = millis();
   }  
+
+  if(millis() - Time_When_Last_Had_Power > 30000)                                 // If we last had power over 30 seconds ago - enter super low power mode
+  {
+    System_Power_Down();
+  }
   
   return(1);  
+}
+
+void System_Power_Down()
+{
+  LED_OFF;
+  DISABLE_MOTORS;
+  Sleep_6050();                                                                   // Sleep the IMU
+
+  detachInterrupt(digitalPinToInterrupt(3));                                      // Stop all interrupts
+  detachInterrupt(digitalPinToInterrupt(2));
+  PCICR = 0b00000000;
+
+  TCCR0A = 0; TCCR0B = 0;                                                         // Stop all the timers
+  TCCR1A = 0; TCCR1B = 0;
+  TCCR2A = 0; TCCR2B = 0;
+  
+  pinMode(LED, INPUT);                                                            // Set pins to outputs
+  pinMode(MotorL, INPUT);  
+  pinMode(MotorR, INPUT);
+  pinMode(IR_Pos, INPUT);                          
+  pinMode(IR_GND, INPUT);
+  pinMode(IR_In, INPUT);
+  
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);                                            // The only way to get out of this will be a device reset!
+  sleep_enable();                                                                 // Set sleep enable (SE) bit:
+  sleep_mode();                                                                   // Put the device to sleep:
+
+  while(1) {}
 }
 
 //--------------------------------------------------------------------------------

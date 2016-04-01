@@ -29,6 +29,11 @@
 #define   EEPROM_READ                 0
 #define   EEPROM_WRITE                1
 
+#define   IR_CTRL                     0
+#define   RF_2CH_CTRL                 1
+#define   RF_3CH_CTRL                 2
+#define   RF_PPM                      3
+
 #define   IR_PACKET_SEARCH_ENABLED    PCMSK0
 #define   ENABLE_IR_PACKET_SEARCH     0b00001000
 #define   DISABLE_IR_PACKET_SEARCH    0b00000000  
@@ -76,6 +81,8 @@ char * float2s(float f, unsigned int digits);                                   
 void Beep_Motors(unsigned long Frequency, unsigned long Duration);                // Uses the motors as speakers to produce noise
 void PWM_PulseOut(int us);                                                        // A blocking function that outputs a pulse of duration us. 
 char Get_Channel_From_EEPROM(char Read_Write, char New_Channel);                  // Writes or reads the current IR channel from/to EEPROM.
+void System_Power_Down(void);                                                     // Completely shuts down the GMC: Gyro, Motor drivers, IR receiver, LED, the arduino clock, all interrupts etc
+void Sleep_6050(void);                                                            // ALTHOUGH this function is in the main file "Robot_Wars_Gyro" or whatever, this needs referencing here
 
 //--- Classes --------------------------------------------------------------------
 

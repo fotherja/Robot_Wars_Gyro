@@ -1,18 +1,17 @@
 /*
- *  
 To Do:
 1) Allow for single wire PPM input? -> hard/not important.
 2) Allow for 3 channel PCM input? to support yaw_setpoint with RF etc. -> hard/important for other people.
 
 Bugs:
- - When writing new PID values to EEPROM, turning off the signal casues a write. GMC doesn't seem to wake up again...
+ - When writing new PID values to EEPROM, loosing signal casues a write. GMC doesn't seem to wake up again...
+ - When turned upside down or something the turning goes all weird.
  - Perhaps make it harder to change channel...
 
 Analysis:
-  - Test current draw.
+  - Test current draw. Including when in sleep.
   - Test whether ESC stuff is working ok and whether it works through the resistors etc.
-  - Test RF stuff
-  
+  - Test RF stuff  
 
 Use of Peripherals:
   - Timer0 - delay(), millis(), micros()
@@ -88,7 +87,7 @@ float Kd;                                                                       
 
 float Yaw, Yaw_setpoint;                                                          // The measured Yaw and the desired Yaw provided by the user's stick movements (respectively)
 
-char RF_Receiver_Connected;                                                       // Gets set by calling the IR_OR_PWM() function at start up. 0 for IR, 1 for 2 channel RF, 2 for 3 channel RF.
+char RF_Receiver_Connected = 0;                                                   // Gets set by calling the IR_OR_PWM() function at start up. 0 for IR, 1 for 2 channel RF, 2 for 3 channel RF.
 
 char IR_Channel = 1;                                                              // Channels 0 or 1 are supported. 
 int PWM_Pulse_Width = 0;                                                          // If this is set at any point to be between 800-2000, the GMC starts outputing PWM pulses every 20ms of this length
@@ -199,13 +198,13 @@ void setup()
   PCICR = 0b00000101;                                                             // Enable Interrupts on PCI_2 and PCI_0
 
   // Detect whether an IR receiver or RF receiver is connected:
-  IR_OR_PWM();                                                                    // Sets the RF_Receiver_Connected global variable to 1 if true otherwise 0 (BLOCKS until a signal is received)
-  if(!RF_Receiver_Connected)
+  IR_OR_PWM();                                                                    // Sets the RF_Receiver_Connected global variable true if using RF, otherwise 0 (BLOCKS until either IR or RF signal present)
+  if(!RF_Receiver_Connected)                                                     
   {
     detachInterrupt(digitalPinToInterrupt(3));                                    // If No RF receiver attached disable the interrupts on these pins and use pin 3 for an ESC PWM signal
     PCMSK2 = 0b00000000; 
     pinMode(PWM_Pin, OUTPUT);
-    PWM_Pulse_Width = 1000;                                                       // Setting this to a value between 800-2000 enables the PWM output. 
+    PWM_Pulse_Width = 0;                                                          // Setting this to a value between 800-2000 enables the PWM output. (At any time)
     
     Beep_Motors(4000, 100);                                                       // Beep twice if IR being used (secondary control...)
     delay(100);
@@ -292,8 +291,7 @@ void Process_PPM()
 //  4) If Sticks are in their neutral position for > 1 second, set Yaw_Setpoint = Yaw & stop motors
 
   // 1) -----  
-  static int LfRghtPulse;
-  static int FwdBckPulse;
+  static int LfRghtPulse, FwdBckPulse, AuxPulse;
   static int Neutral_Input_Count_PWM = NEUTRAL_THRESHOLD_COUNT; 
   static unsigned long Time_at_Motor_Update; 
   static int No_Signal_PWM = NO_SIGNAL_THESHOLD_PWM;                              // Assume no signal at startup
@@ -335,19 +333,43 @@ void Process_PPM()
 
 //##########################################################################################################
   // Code to allow for 3rd channel RF. Things to consider:
-    // Perhaps reset the zero value on transmitter on/off cycling.
-    // how can drift be adjusted for.
-    // Since most people will probably use the GMC with RF control this all needs to be top notch!
+  // Perhaps reset the zero value on transmitter on/off cycling.
+  // how can drift be adjusted for.
+  // Since most people will probably use the GMC with RF control this all needs to be top notch!
+
+  if(RF_Receiver_Connected == RF_3CH_CTRL)  {
+    if((AuxPulseWdth >= 900) && (AuxPulseWdth <= 2100)) {                         // If we have a pulse within valid range
+        AuxPulseWdth_Safe = AuxPulseWdth - 1500;
+        AuxPulseWdth = 0;
+        
+        Yaw_setpoint += (((float)AuxPulseWdth_Safe) * 0.05);                      // Scaling so full stick (+500us) gives 500 degrees per second rate of turn
+        AuxPulseWdth_Safe = AuxPulseWdth_Safe / 2;     
+        AuxPulse = VALID;   
+      }
+    else  {
+        AuxPulse = INVALID;
+        No_Signal_PWM++;
+      } 
+
+    if(FwdBckPulse && LfRghtPulse && AuxPulse)  {                                 // If we've just received 3 valid pulses, clear the No_Signal count    
+        No_Signal_PWM = 0;  
+      }      
+
+  // Need to now process this (do this in support.c) and overwrite the Yaw_setpoint variable.
+           
+  }
+  else  {
+    if(FwdBckPulse && LfRghtPulse)  {                                             // If we've just received 2 valid pulses, clear the No_Signal count    
+        No_Signal_PWM = 0;  
+      }        
+  }
+    
 //##########################################################################################################    
        
   if(Yaw_setpoint >= 360.0)                                                       // Keep Yaw_setpoint within 0-360 limits
       Yaw_setpoint -= 360.0;    
   else if(Yaw_setpoint < 0.0) 
-      Yaw_setpoint += 360.0;          
-
-  if(FwdBckPulse && LfRghtPulse)  {                                               // If we've just received 2 valid pulses, clear the No_Signal count    
-      No_Signal_PWM = 0;  
-    }  
+      Yaw_setpoint += 360.0;  
 
   // 3) -----
   if(No_Signal_PWM > NO_SIGNAL_THESHOLD_PWM)  {     
@@ -449,7 +471,7 @@ void Process_IR()
 
     OCR1A = 128;
     OCR1B = 128; 
-
+    
     return;
   }
 
@@ -569,9 +591,9 @@ void PID_Routine()
     if(Upside_Down()) {
       float Inverted_Yaw_setpoint = 180.0 - Yaw_setpoint;
       
-      if(Inverted_Yaw_setpoint >= 360.0)                                          // Keep Inverted_Yaw_setpoint within 0-360 limits
+      while(Inverted_Yaw_setpoint >= 360.0)                                          // Keep Inverted_Yaw_setpoint within 0-360 limits
           Inverted_Yaw_setpoint -= 360.0;    
-      else if(Inverted_Yaw_setpoint < 0.0) 
+      while(Inverted_Yaw_setpoint < 0.0) 
           Inverted_Yaw_setpoint += 360.0;    
             
       FwdBckPulseWdth_Safe_Temp = -FwdBckPulseWdth_Safe_Temp;   
@@ -715,8 +737,12 @@ void setup_6050() {
     } 
 }
 
+void Sleep_6050() {
+  mpu.setSleepEnabled(1);
+}
+
 //--------------------------------------------------------------------------------
-void IR_OR_PWM()  // RF_Receiver_Connected = 0,1,2 - IR connectivity, RF 2 channels, RF 3 channels.   
+void IR_OR_PWM()  // RF_Receiver_Connected = 0,1,2,3 - IR connectivity, RF 2 channels, RF 3 channels, RF PPM.   
 {
   delay(200);
   
@@ -724,6 +750,7 @@ void IR_OR_PWM()  // RF_Receiver_Connected = 0,1,2 - IR connectivity, RF 2 chann
   {    
     LfRghtPulseWdth = 0;
     FwdBckPulseWdth = 0;
+    AuxPulseWdth = 0;
     Decode_Flag = 0;
 
     LED_OFF;
@@ -733,19 +760,18 @@ void IR_OR_PWM()  // RF_Receiver_Connected = 0,1,2 - IR connectivity, RF 2 chann
 
     if((FwdBckPulseWdth >= 900) && (FwdBckPulseWdth <= 2100)) {                   // If we're receiving RF data return with RF_Receiver_Connected = 1
       if((LfRghtPulseWdth >= 900) && (LfRghtPulseWdth <= 2100)) {
-        RF_Receiver_Connected = 1;  
-        delay(125);                                                               // Allow time for IR mode to be switched off and for an RF PPM pulse to be captured.
+        RF_Receiver_Connected = RF_2CH_CTRL;  
+        delay(125);                                                               // Allow time for IR mode to be switched off and for an RF ch3 pulse to be captured.
                
         if((AuxPulseWdth >= 900) && (AuxPulseWdth <= 2100))
-          RF_Receiver_Connected = 2;      
-          
+          RF_Receiver_Connected = RF_3CH_CTRL;         
         return;
       }
     }
       
     if(Decode_Flag) {
       if(Decode())  {                                                             // If we're receiving a proper manchester encoded signal from the IR return with RF_Receiver_Connected = 0;                         
-        RF_Receiver_Connected = 0;
+        RF_Receiver_Connected = IR_CTRL;
         return;      
       }
     }    
