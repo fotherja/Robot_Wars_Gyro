@@ -1,17 +1,25 @@
 /*
+ * Title: Gyro Motor Controller
+ * Author: James Fotherby
+ * Date: 2/4/2016
+ * 
+ * 
+
 To Do:
-1) Allow for single wire PPM input? -> hard/not important.
-2) Allow for 3 channel PCM input? to support yaw_setpoint with RF etc. -> hard/important for other people.
+1) Get Josh's IR bootloader.
+2) Need to make the IR transmitter more user friendly and flexible. Want to be able to plug in either a game cube or the trainer port of a standard RF transmitter
+3) Try two channel operation! 
+4) Support varying PWM out. Could send a flag bit meaning a special packet: with Yaw_setpoint still but instead of speed have the PWM length. Interrupt driven...
+5) Test, test, test! Especially the PWM out - vital for Barrel bot.
 
 Bugs:
- - When writing new PID values to EEPROM, loosing signal casues a write. GMC doesn't seem to wake up again...
- - When turned upside down or something the turning goes all weird.
- - Perhaps make it harder to change channel...
+ - When turned upside down or something the turning goes all weird. Can't seem to recreate this problem...
+ - Things once went all jittery - is this lack of CPU power? Maybe the battery was just a bit low... maybe the transmitter was running low on power???
 
 Analysis:
-  - Test current draw. Including when in sleep.
+  - Current draw in sleep is incredibly low, I can't measure it! Current draw with 4 wheels at full speed in the air ~400mA
   - Test whether ESC stuff is working ok and whether it works through the resistors etc.
-  - Test RF stuff  
+  - Test RF stuff. No gyro, 3 channel, 2 channel etc.
 
 Use of Peripherals:
   - Timer0 - delay(), millis(), micros()
@@ -55,7 +63,7 @@ Description:
 #include "Support.h"
 #include "Average.h"
 
-#define  _REVERSE_IR_FWBK_AND_LFRT_                                               // Reverse channels - BIG HERO 6 NEEDS THIS!
+//#define  _REVERSE_MOTOR_POLARITY                                                  // Reverse channels - BIG HERO 6 NEEDS THIS!
 
 //--- IMU6050 Specific: ----------------------------------------------------------
 MPU6050 mpu;
@@ -92,9 +100,9 @@ char RF_Receiver_Connected = 0;                                                 
 char IR_Channel = 1;                                                              // Channels 0 or 1 are supported. 
 int PWM_Pulse_Width = 0;                                                          // If this is set at any point to be between 800-2000, the GMC starts outputing PWM pulses every 20ms of this length
 
-long FwdBckPulseWdth_Safe;                                                        // The Process_PPM routine saves the volatile versions above to these safe copies for later modification and use  
-long LfRghtPulseWdth_Safe;
-long AuxPulseWdth_Safe;
+int FwdBckPulseWdth_Safe;                                                         // The Process_PPM routine saves the volatile versions above to these safe copies for later modification and use  
+int LfRghtPulseWdth_Safe;   
+int AuxPulseWdth_Safe;
 
 volatile long FwdBckPulseWdth;                                                    // The interrupt routines continously update these whenever a new PPM signal is received (hence volatile!)
 volatile long LfRghtPulseWdth;
@@ -137,15 +145,15 @@ void setup()
   // If the values are ridiculous we assume they haven't been written into EEPROM yet so we set them to defaults and burn them in
   if(Kp <= 0.0 || Kp >= 5.0)  {
     Kp = 1.20f; Ki = 2.0e-7f; Kd = 5.0e4f;
-    Access_EEPROM(EEPROM_WRITE);
+    Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);
   }
   if(Ki >= 4.0e-6)  {
     Kp = 1.20f; Ki = 2.0e-7f; Kd = 5.0e4f;
-    Access_EEPROM(EEPROM_WRITE);
+    Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);
   }
   if(Kd >= 2.0e6)  {
     Kp = 1.20f; Ki = 2.0e-7f; Kd = 5.0e4f;
-    Access_EEPROM(EEPROM_WRITE);
+    Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);
   }
     
   // On startup send to the serial port the current PID parameters. There are 10K resistors so no damage will be done if an RF receiver is attached
@@ -216,7 +224,7 @@ void setup()
 //--- Main: ----------------------------------------------------------------------
 void loop() {
   // If DMP initialisation failed just run without gyro control
-  if (!dmpReady)  {                         // TRY WITHOUT GYRO
+  if (!dmpReady)  {                        
     while(1)  {
       if(!Low_Battery())  { 
         if(RF_Receiver_Connected) {                                             // If an RF receiver is connected take signals from this as it has better performance than an IR controller
@@ -291,6 +299,7 @@ void Process_PPM()
 //  4) If Sticks are in their neutral position for > 1 second, set Yaw_Setpoint = Yaw & stop motors
 
   // 1) -----  
+  static float Zero_Calibration = 0.0;
   static int LfRghtPulse, FwdBckPulse, AuxPulse;
   static int Neutral_Input_Count_PWM = NEUTRAL_THRESHOLD_COUNT; 
   static unsigned long Time_at_Motor_Update; 
@@ -307,7 +316,7 @@ void Process_PPM()
 
   // 2) -----
   if((FwdBckPulseWdth >= 900) && (FwdBckPulseWdth <= 2100)) {                     // If we have a pulse within valid range
-      FwdBckPulseWdth_Safe = FwdBckPulseWdth - 1500;
+      FwdBckPulseWdth_Safe = (int)FwdBckPulseWdth - 1500;
       FwdBckPulseWdth = 0;                                                        // If no new values are received this ensures we don't keep using old PWM data
       
       FwdBckPulseWdth_Safe = FwdBckPulseWdth_Safe / 2;
@@ -319,10 +328,12 @@ void Process_PPM()
     }
   
   if((LfRghtPulseWdth >= 900) && (LfRghtPulseWdth <= 2100)) {                     // If we have a pulse within valid range
-      LfRghtPulseWdth_Safe = LfRghtPulseWdth - 1500;
+      LfRghtPulseWdth_Safe = (int)LfRghtPulseWdth - 1500;
       LfRghtPulseWdth = 0;
       
-      Yaw_setpoint += (((float)LfRghtPulseWdth_Safe) * 0.05);                     // Scaling so full stick (+500us) gives 500 degrees per second rate of turn
+      if(RF_Receiver_Connected != RF_3CH_CTRL)  {
+        Yaw_setpoint += (((float)LfRghtPulseWdth_Safe) * 0.05);                   // Scaling so full stick (+500us) gives 500 degrees per second rate of turn
+      }
       LfRghtPulseWdth_Safe = LfRghtPulseWdth_Safe / 2;     
       LfRghtPulse = VALID;   
     }
@@ -333,16 +344,14 @@ void Process_PPM()
 
 //##########################################################################################################
   // Code to allow for 3rd channel RF. Things to consider:
-  // Perhaps reset the zero value on transmitter on/off cycling.
-  // how can drift be adjusted for.
-  // Since most people will probably use the GMC with RF control this all needs to be top notch!
+  // Reset the zero value on transmitter on/off cycling.
+  // how can drift be adjusted for?
 
   if(RF_Receiver_Connected == RF_3CH_CTRL)  {
     if((AuxPulseWdth >= 900) && (AuxPulseWdth <= 2100)) {                         // If we have a pulse within valid range
-        AuxPulseWdth_Safe = AuxPulseWdth - 1500;
+        AuxPulseWdth_Safe = (int)AuxPulseWdth - 1500;
         AuxPulseWdth = 0;
         
-        Yaw_setpoint += (((float)AuxPulseWdth_Safe) * 0.05);                      // Scaling so full stick (+500us) gives 500 degrees per second rate of turn
         AuxPulseWdth_Safe = AuxPulseWdth_Safe / 2;     
         AuxPulse = VALID;   
       }
@@ -352,18 +361,17 @@ void Process_PPM()
       } 
 
     if(FwdBckPulse && LfRghtPulse && AuxPulse)  {                                 // If we've just received 3 valid pulses, clear the No_Signal count    
-        No_Signal_PWM = 0;  
-      }      
-
-  // Need to now process this (do this in support.c) and overwrite the Yaw_setpoint variable.
-           
+        No_Signal_PWM = 0;
+        
+        // Next, overwrite Yaw_setpoint using joytick data and Zero_Calibration, the latter is updated when the transmitter is cycled off and on.
+        Yaw_setpoint = Calculate_Joy_Stick(LfRghtPulseWdth_Safe, AuxPulseWdth_Safe) + Zero_Calibration;          
+      }        
   }
   else  {
     if(FwdBckPulse && LfRghtPulse)  {                                             // If we've just received 2 valid pulses, clear the No_Signal count    
         No_Signal_PWM = 0;  
       }        
-  }
-    
+  }    
 //##########################################################################################################    
        
   if(Yaw_setpoint >= 360.0)                                                       // Keep Yaw_setpoint within 0-360 limits
@@ -376,6 +384,7 @@ void Process_PPM()
     LED_OFF;                                                                      // Turn LED off if no signal is being received
     DISABLE_MOTORS;                                                               // Disable outputs  
     PWM_Pulse_Width = 0;                                                          // Stop all signals to ESC
+    Zero_Calibration = Yaw_setpoint;                                              // Turning off the signal sets the Zero_Calibration variable
            
     OCR1A = 128;
     OCR1B = 128; 
@@ -392,8 +401,7 @@ void Process_PPM()
       
       if(Neutral_Input_Count_PWM % 15 == 0) {                                     // Slow flash LED to indicate the PID algorithm is suspended due to inactivity
         digitalWrite(LED, !digitalRead(LED));      
-      }     
-       
+      }            
       return;                                                                     // Return with a zero to disable motor activity
     }   
   }
@@ -485,8 +493,7 @@ void Process_IR()
       
       if(Neutral_Input_Count_IR % 15 == 0) {                                      // Slow flash LED to indicate the PID algorithm is suspended due to inactivity
         digitalWrite(LED, !digitalRead(LED));      
-      }     
-             
+      }                  
       return;                                                                     // Return with a zero to disable motor activity
     }   
   }
@@ -615,7 +622,7 @@ void PID_Routine()
     LfRghtPulseWdth_Safe = round(Output);
     LfRghtPulseWdth_Safe = constrain(LfRghtPulseWdth_Safe, -100, 100);    
 
-    #ifndef _REVERSE_IR_FWBK_AND_LFRT_         
+    #ifndef _REVERSE_MOTOR_POLARITY         
       OCR1A = Filter1.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));
       OCR1B = Filter2.Rolling_Average(constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));
     #else
@@ -655,7 +662,7 @@ void Update_PID_Values(char Button_Info)
   if(Button_Info & 0b100)  {                                                      // If Z_Button pressed on GC controller
     if((Button_Info & 0b11) == 0b11)  {                                           // B button
       Kp -= 0.002;
-      Kp = max(Kp, 0.0);                                                          // constrain the min value to 0
+      Kp = max(Kp, 0.0);                                                          // Constrain the min value to 0
       if(Kp > 0.0)                                                                // Don't flash light if we've reached zero
         digitalWrite(LED, !digitalRead(LED));
     }
@@ -690,14 +697,30 @@ void Update_PID_Values(char Button_Info)
 
 //--------------------------------------------------------------------------------
 void Access_EEPROM (char Read_Write)
-{ 
+{
+// Bug: When writing new PID values to EEPROM, loosing signal casues a write. The GMC doesn't seem to wake up again...
+//      This only happens when 2 or 3 of the parameters have been altered. Something to do with how long eeprom writes take.
+//      By Writing one value per call, we get around this problem.
+
 // If Read_Write = 1 this routine writes the current PID parameters to EEPROM otherwise it reads them
+  static char i = 0;
 
   if(Read_Write)
   {
-    EEPROM.put(0, Kp);
-    EEPROM.put(4, Ki);
-    EEPROM.put(8, Kd);
+    switch(i) {
+      case 0:
+        EEPROM.put(0, Kp);
+        i = 1;
+        return;
+      case 1:
+        EEPROM.put(4, Ki);
+        i = 2;
+        return;
+      default:
+        EEPROM.put(8, Kd);
+        i = 0;
+        return;
+    }
   }
   else
   {

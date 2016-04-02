@@ -2,6 +2,7 @@
 #include "Arduino.h"
 #include <avr/power.h>
 #include <avr/sleep.h>
+#include <math.h>
 #include <EEPROM.h>
 
 float Turn_Error(float Yaw_setpoint, float Yaw)
@@ -113,7 +114,7 @@ int Low_Battery()
   Low_Battery_Flag = 1;  
   DISABLE_MOTORS;                                                                 // Disable all outputs
 
-  if(millis() - Time_at_LED_Change > 100)
+  if(millis() - Time_at_LED_Change > 75)
   {
     digitalWrite(LED, !digitalRead(LED));                                         // Flash LED
     Time_at_LED_Change = millis();
@@ -127,6 +128,7 @@ int Low_Battery()
   return(1);  
 }
 
+//--------------------------------------------------------------------------------
 void System_Power_Down()
 {
   LED_OFF;
@@ -249,6 +251,36 @@ char Get_Channel_From_EEPROM(char Read_Write, char New_Channel)
   
   return(return_val);  
 }
+
+
+//--------------------------------------------------------------------------------
+float Calculate_Joy_Stick(int LfRghtPulseWdth_Safe, int AuxPulseWdth_Safe)
+{  
+  static float JoyStick_Sq_Magnitude;
+  static float JoyStick_Angle;
+
+  JoyStick_Sq_Magnitude = pow(LfRghtPulseWdth_Safe, 2.0) + pow(AuxPulseWdth_Safe, 2.0);
+           
+  if(JoyStick_Sq_Magnitude > 900.0)
+  {
+    JoyStick_Angle = atan2(LfRghtPulseWdth_Safe, AuxPulseWdth_Safe) * (180/PI);                // Calculate new value
+  }  
+
+  return(JoyStick_Angle);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -5,7 +5,7 @@
 //--- Defines: -------------------------------------------------------------------
 // User adjustable:
 #define   ROLLING_AVG_FILTER_LENGTH   4                                           // Rolling average filter length. smooths acceleration of motors.
-#define   EXPECTED_BITS               20                                          // For IR receiving. The number of bits we expect to receive
+#define   EXPECTED_BITS               20                                          // For IR receiving. The number of bits we expect to receive (not including the start bit)
 
 #define   NO_SIGNAL_THESHOLD_PWM      10                                          // Number of erronous PPM signals received before we deduce no signal is being received
 #define   NO_SIGNAL_THESHOLD_IR       10                                          // Number of erronous PPM signals received before we deduce no signal is being received
@@ -76,6 +76,7 @@
 
 //--- Routines -------------------------------------------------------------------
 float Turn_Error(float, float);                                                   // From the Yaw & Yaw_setpoint, this routine returns how many degrees we are from where we want to be. 
+float Calculate_Joy_Stick(int LfRghtPulseWdth_Safe, int AuxPulseWdth_Safe);       // Given x and y values this returns a Yaw_setpoint value
 int Low_Battery(void);                                                            // Returns 0 if battery is sufficiently charged, 1 otherwise. Includes hysterisis & LED flashing for low battery (Non-blocking)
 char * float2s(float f, unsigned int digits);                                     // Converts a float to a string in standard form
 void Beep_Motors(unsigned long Frequency, unsigned long Duration);                // Uses the motors as speakers to produce noise
