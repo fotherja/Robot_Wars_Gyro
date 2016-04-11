@@ -11,9 +11,8 @@ We only send DataB if there has been a change to the PWM_Pulse_Width, or button 
 Things to know: Will the ESC work through a 4.7K resistor. Is it ok to loose signal completely or must it be at 1000us when not in use?
 
 To Do:
-1) Support varying PWM out. Have 2 packet types and 18 rather than 21 bit per packet (that's including start bits).
+1) Support varying PWM out.
 2) Get Josh's IR bootloader.
-3) Test all the changes I've made including my IR_Receiver class.
 
 Bugs:
  - When turned upside down or something the turning goes all weird. Can't seem to recreate this problem...
@@ -286,17 +285,17 @@ void Process_PPM()
   static float Zero_Calibration = 0.0;
   static char LfRghtPulse, FwdBckPulse, AuxPulse;
   static int Neutral_Input_Count_PWM = NEUTRAL_THRESHOLD_COUNT; 
-  static unsigned long Time_at_Motor_Update;   // Shall we add = millis(); so that on startup there isn't loads of catch up to do...
+  static unsigned long Time_of_last_Update = millis();                            
   static int No_Signal_PWM = NO_SIGNAL_THESHOLD_PWM;                              // Assume no signal at startup
   
-  if(millis() - Time_at_Motor_Update < PPM_UPDATE_PERIOD) { 
+  if(millis() - Time_of_last_Update < PPM_UPDATE_PERIOD) { 
     if(No_Signal_PWM > NO_SIGNAL_THESHOLD_PWM || Neutral_Input_Count_PWM >= NEUTRAL_THRESHOLD_COUNT)  {
       DISABLE_MOTORS;
       Yaw_setpoint = Yaw;      
     }   
     return;        
   }  
-  Time_at_Motor_Update += PPM_UPDATE_PERIOD;                                              
+  Time_of_last_Update += PPM_UPDATE_PERIOD;                                              
 
   // 2) -----
   if((FwdBckPulseWdth >= 900) && (FwdBckPulseWdth <= 2100)) {                     // If we have a pulse within valid range
@@ -402,23 +401,23 @@ void Process_IR()
 { 
 // A few things about this routine:
 //  1) It's run every IR_UPDATE_PERIOD ms
-//  2) It checks if any IR Data is being recieved and whether it's valid.                       //GET RID OF THIS MAYBE. BETTER COMMENTS
+//  2) It checks if any IR Data is being recieved and whether it's valid.       
 //  3) Turns LED on to indiciate circuit is receiving valid IR data from receiver.  
 //  4) If the joysticks go still for a while, idle.   
 
   // 1) ----- 
   static int Neutral_Input_Count_IR = NEUTRAL_THRESHOLD_COUNT;
-  static unsigned long Time_at_Motor_Update;       // Shall we add = millis(); so that on startup there isn't loads of catch up to do... BAD NAME TOO!
+  static unsigned long Time_of_last_Update = millis(); 
   static int No_Signal_IR = NO_SIGNAL_THESHOLD_IR;                                // Assume no signal at start up
   
-  if(millis() - Time_at_Motor_Update < IR_UPDATE_PERIOD) { 
+  if(millis() - Time_of_last_Update < IR_UPDATE_PERIOD) { 
     if(No_Signal_IR > NO_SIGNAL_THESHOLD_IR || Neutral_Input_Count_IR >= NEUTRAL_THRESHOLD_COUNT)  {
       DISABLE_MOTORS;                                                      
       Yaw_setpoint = Yaw;      
     }        
     return;         
   }  
-  Time_at_Motor_Update += IR_UPDATE_PERIOD; 
+  Time_of_last_Update += IR_UPDATE_PERIOD; 
       
   if(unsigned long IR_Data = IR_Rx.Check_Data())                                  // If The data contains valid information clear the no signal count and process info
   {                                                               
@@ -490,7 +489,7 @@ void PID_Routine()
 // We deduce whether the device has been flipped by comparing the current gravity vector against the startup gravity vector. If their dot product
 // is -ve we've been flipped. In this case we need to make just a few alterations to the inputs...
 
-  static unsigned long Time_at_Motor_Update;       // Shall we add = millis(); so that on startup there isn't loads of catch up to do... and it's staggered!
+  static unsigned long Time_at_Motor_Update = millis();                           // Want the Function calls to be staggered and this is achieved I think.
   int FwdBckPulseWdth_Safe_Temp = FwdBckPulseWdth_Safe;
   unsigned long delta_t;
 
