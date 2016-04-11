@@ -5,7 +5,6 @@
 //--- Defines: -------------------------------------------------------------------
 // User adjustable:
 #define   ROLLING_AVG_FILTER_LENGTH   4                                           // Rolling average filter length. smooths acceleration of motors.
-#define   EXPECTED_BITS               20                                          // For IR receiving. The number of bits we expect to receive (not including the start bit)
 
 #define   NO_SIGNAL_THESHOLD_PWM      10                                          // Number of erronous PPM signals received before we deduce no signal is being received
 #define   NO_SIGNAL_THESHOLD_IR       10                                          // Number of erronous PPM signals received before we deduce no signal is being received
