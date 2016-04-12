@@ -224,15 +224,6 @@ void Beep_Motors(unsigned long Frequency, unsigned long Duration)
 }
 
 //--------------------------------------------------------------------------------
-void PWM_PulseOut(int us)
-{
-   pinMode(PWM_Pin, OUTPUT);
-   PWM_PIN_HIGH;
-   delayMicroseconds(us);
-   PWM_PIN_LOW;
-}
-
-//--------------------------------------------------------------------------------
 char Get_Channel_From_EEPROM(char Read_Write, char New_Channel)
 {
 // If Read_Write = 1 this routine writes New_Channel value to EEPROM, if 0 it returns the current channel number
