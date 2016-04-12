@@ -53,7 +53,8 @@
 #define   FWDBCKIN_STATE              PIND & 0x08                                 //digitalRead(FwdBckIn)         
 #define   LFRGHTIN_STATE              PIND & 0x02                                 //digitalRead(LfRghtIn)         
 #define   AUXIN_STATE                 PINB & 0x08                                 //digitalRead(AuxPWMIn)         
-#define   IR_IN_STATE                 PINB & 0x08                                 //digitalRead(IR_In)            
+#define   IR_IN_STATE                 PINB & 0x08                                 //digitalRead(IR_In) 
+#define   PWM_PIN_IS_HIGH             PIND & 0x08                                 //digitalRead(PWM_Pin)
 
 //--- Pin definitions: -----------------------------------------------------------
 #define   PWM_Pin                     3                                           // Output PWM, used if IR detected and hence FwdBckIn not being used etc
@@ -79,7 +80,6 @@ float Calculate_Joy_Stick(int LfRghtPulseWdth_Safe, int AuxPulseWdth_Safe);     
 int Low_Battery(void);                                                            // Returns 0 if battery is sufficiently charged, 1 otherwise. Includes hysterisis & LED flashing for low battery (Non-blocking)
 char * float2s(float f, unsigned int digits);                                     // Converts a float to a string in standard form
 void Beep_Motors(unsigned long Frequency, unsigned long Duration);                // Uses the motors as speakers to produce noise
-void PWM_PulseOut(int us);                                                        // A blocking function that outputs a pulse of duration us. 
 char Get_Channel_From_EEPROM(char Read_Write, char New_Channel);                  // Writes or reads the current IR channel from/to EEPROM.
 void System_Power_Down(void);                                                     // Completely shuts down the GMC: Gyro, Motor drivers, IR receiver, LED, the arduino clock, all interrupts etc
 void Sleep_6050(void);                                                            // ALTHOUGH this function is in the main file "Robot_Wars_Gyro" or whatever, this needs referencing here

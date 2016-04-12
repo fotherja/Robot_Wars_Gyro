@@ -11,8 +11,8 @@ We only send DataB if there has been a change to the PWM_Pulse_Width, or button 
 Things to know: Will the ESC work through a 4.7K resistor. Is it ok to loose signal completely or must it be at 1000us when not in use?
 
 To Do:
-1) Support varying PWM out.
-2) Get Josh's IR bootloader.
+1) Synchronise PWM out so that it occurs during "free time" Currently getting jitter in the PWM signal
+2) Get Josh's IR bootloader working...
 
 Bugs:
  - When turned upside down or something the turning goes all weird. Can't seem to recreate this problem...
@@ -490,15 +490,34 @@ void PID_Routine()
 // is -ve we've been flipped. In this case we need to make just a few alterations to the inputs...
 
   static unsigned long Time_at_Motor_Update = millis();                           // Want the Function calls to be staggered and this is achieved I think.
+  static unsigned long Time_at_PWM_Start;
+  
   int FwdBckPulseWdth_Safe_Temp = FwdBckPulseWdth_Safe;
   unsigned long delta_t;
 
   delta_t = micros() - Time_at_Motor_Update;  
   if(delta_t < 10000)                                                             // Run this routine every 10ms
     return; 
-  Time_at_Motor_Update += 10000;                                                                                            
+  Time_at_Motor_Update += 10000;
 
-  if(MOTORS_ENABLED)  {
+//----------
+  if(PWM_Pulse_Width > 800) {                                                     // If a PWM Pulseout is demanded start the pulse here 
+    static char Toggle = 0;
+    if(Toggle == 0) {                                                             // Only output a pulse every other call to this function: so every 20ms
+      Toggle = 1;    
+
+      pinMode(PWM_Pin, OUTPUT);
+      PWM_PIN_HIGH;
+      Time_at_PWM_Start = micros();                                               // Record the time the Pulseout started
+    }
+    else {
+      Toggle = 0;
+    }          
+  }
+
+//----------
+  if(MOTORS_ENABLED)  
+  {
     float Error, Output, dInput;
     static float ErrorSum, LastYaw; 
   
@@ -538,18 +557,10 @@ void PID_Routine()
     #endif
   }
 
-  // Blocking code to generate a PWM pulse should PWM_Pulse_Width be in 800-2000 range. But this requires the PID algorithm to be called! MUST BE USING IR!  
-  if(PWM_Pulse_Width > 800) {
-    if(PWM_Pulse_Width <= 2000) {
-      static char Toggle = 0;
-      if(Toggle == 0) {
-        Toggle = 1;
-        PWM_PulseOut(PWM_Pulse_Width);
-      }
-      else {
-        Toggle = 0;
-      }
-    }      
+  // Blocking code to finish generation of a PWM pulse. This requires the PID algorithm to be called regularly! MUST BE USING IR!   
+  if(PWM_PIN_IS_HIGH) {    
+    while(micros() - Time_at_PWM_Start < PWM_Pulse_Width) {}
+    PWM_PIN_LOW;             
   }   
 }
 
