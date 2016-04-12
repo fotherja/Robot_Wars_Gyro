@@ -21,7 +21,7 @@ If only 2 RF channels are connected one channel is used for speed control and th
 # Discussion of IR control:
 The IR protocols that have been developed for the GMC are designed to be as robust to interference as possible. The manchester encoded signal that is expected provides very robust error detection. IR has been found to work well and allows you to do away with a bulky RF receiver.
 
-The IR transmitter code is available at https://github.com/fotherja/Robot_Wars_IR_Tx. It allows control via a Nintendo game gube or [by plugging into the trainer port of a standard RF transmitter.]
+The IR transmitter code is available at https://github.com/fotherja/Robot_Wars_IR_Transmitter. It allows control via a Nintendo game gube or via the trainer port of a standard RF transmitter.
 
 # LED Indications:
  - Very Fast Flashing - PID parameters being altered
