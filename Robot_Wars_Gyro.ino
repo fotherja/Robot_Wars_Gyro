@@ -56,8 +56,7 @@ Description:
     - Signal remaining in neutral so idling the motors (otherwise the PID control goes crazy when the robot is picked up...)
     - PID Parameters being updated via IR
 */
-
-
+    
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
 #include <EEPROM.h>
@@ -65,7 +64,7 @@ Description:
 #include "Average.h"
 #include "IR_Receive.h"
 
-//#define  _REVERSE_MOTOR_POLARITY                                                  // Reverse channels - BIG HERO 6 NEEDS THIS!
+#define  _REVERSE_MOTOR_POLARITY                                                  // Reverse channels - BIG HERO 6 NEEDS THIS!
 
 //--- IMU6050 Specific: ----------------------------------------------------------
 MPU6050 mpu;
@@ -137,15 +136,15 @@ void setup()
 
   // If the values are ridiculous we assume they haven't been written into EEPROM yet so we set them to defaults and burn them in
   if(Kp <= 0.0 || Kp >= 5.0)  {
-    Kp = 1.20f; Ki = 2.0e-7f; Kd = 5.0e4f;
+    Kp = 1.0f; Ki = 1.0e-7f; Kd = 1.0e5f;
     Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);
   }
   if(Ki >= 4.0e-6)  {
-    Kp = 1.20f; Ki = 2.0e-7f; Kd = 5.0e4f;
+    Kp = 1.0f; Ki = 1.0e-7f; Kd = 1.0e5f;
     Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);
   }
   if(Kd >= 2.0e6)  {
-    Kp = 1.20f; Ki = 2.0e-7f; Kd = 5.0e4f;
+    Kp = 1.0f; Ki = 1.0e-7f; Kd = 1.0e5f;
     Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);
   }
     
@@ -406,26 +405,26 @@ void Process_IR()
 
   // 1) ----- 
   static int Neutral_Input_Count_IR = NEUTRAL_THRESHOLD_COUNT;
-  static unsigned long Time_of_last_Update = millis(); 
+  static unsigned long Run_IR_Update = millis() + IR_UPDATE_PERIOD; 
   static int No_Signal_IR = NO_SIGNAL_THESHOLD_IR;                                // Assume no signal at start up
   
-  if(millis() - Time_of_last_Update < IR_UPDATE_PERIOD) { 
+  if(millis() < Run_IR_Update) { 
     if(No_Signal_IR > NO_SIGNAL_THESHOLD_IR || Neutral_Input_Count_IR >= NEUTRAL_THRESHOLD_COUNT)  {
       DISABLE_MOTORS;                                                      
       Yaw_setpoint = Yaw;      
     }        
     return;         
-  }  
-  Time_of_last_Update += IR_UPDATE_PERIOD; 
-      
+  } 
+  Run_IR_Update += IR_UPDATE_PERIOD;
+
+  // 2) -----    
   if(unsigned long IR_Data = IR_Rx.Check_Data())                                  // If The data contains valid information clear the no signal count and process info
   {                                                               
     No_Signal_IR = 0;
     
     if(IR_Data & 1)     // -----------------------------------------------------   If the packet identifier bit is 1 it's a Type A packet:
     {
-      // The common type A packet contains the Yaw_setpoint and Speed data  
-    
+      // The common type A packet contains the Yaw_setpoint and Speed data: [YYYY_YYYY__SSSS_SSSS_T] - Where Y = Yaw, S = Speed, T = Packet Type    
       Yaw_setpoint = (float)map(((IR_Data >> 9) & 0xFF), 0, 255, 0, 359);
       FwdBckPulseWdth_Safe = (int)((IR_Data >> 1) & 0xFF) - 128;
       FwdBckPulseWdth_Safe = (FwdBckPulseWdth_Safe * 3) / 4; 
@@ -436,15 +435,17 @@ void Process_IR()
     }
     else                // -----------------------------------------------------   If the packet identifier bit is 0 it's a Type B packet:
     {
-      // The rarer type B packet contains an 8 bit PWM pulse width value, ..... [Channel change? Bootloader? PID Tuning?] 
-
-      PWM_Pulse_Width = map(((IR_Data >> 9) & 0xFF), 0, 255, 1000, 2000);            
+      // The rarer type B packet contains an 8 bit PWM pulsewidth & other info bits: [PPPP_PPPP_BBB_XXXXXT] - Where P = Pulsewidth, B = GC Buttons, X = Not used, T = Packet Type
+      PWM_Pulse_Width = map(((IR_Data >> 9) & 0xFF), 0, 255, 1000, 2000);          
+      
+      if(unsigned char Button_Bits = ((IR_Data >> 6) & 0x7)) {
+        Update_PID_Values(Button_Bits);
+      }                 
     }
   }
   else  {
     No_Signal_IR++;                                                               // If the data packet was empty which occurs if there was an error etc, increase no signal count          
   }
-
   
   // 3) -----
   if(No_Signal_IR > NO_SIGNAL_THESHOLD_IR)  {     
@@ -488,37 +489,48 @@ void PID_Routine()
 // We deduce whether the device has been flipped by comparing the current gravity vector against the startup gravity vector. If their dot product
 // is -ve we've been flipped. In this case we need to make just a few alterations to the inputs...
 
-  static unsigned long Time_at_Motor_Update = millis();                           // Want the Function calls to be staggered and this is achieved I think.
+  static unsigned long Time_at_Motor_Update = micros();
+  static unsigned long Run_Next_PID = micros() + 20000;                           
   static unsigned long Time_at_PWM_Start;
   
   int FwdBckPulseWdth_Safe_Temp = FwdBckPulseWdth_Safe;
   unsigned long delta_t;
-
-  delta_t = micros() - Time_at_Motor_Update;  
-  if(delta_t < 10000)                                                             // Run this routine every 10ms
-    return; 
-  Time_at_Motor_Update += 10000;
+    
+  if(micros() < Run_Next_PID)                                                     // Run this routine every 20ms
+    return;
 
 //----------
   if(PWM_Pulse_Width > 800) {                                                     // If a PWM Pulseout is demanded start the pulse here 
-    static char Toggle = 0;
-    if(Toggle == 0) {                                                             // Only output a pulse every other call to this function: so every 20ms
-      Toggle = 1;    
-
-      pinMode(PWM_Pin, OUTPUT);
-      PWM_PIN_HIGH;
-      Time_at_PWM_Start = micros();                                               // Record the time the Pulseout started
+    pinMode(PWM_Pin, OUTPUT);
+    PWM_PIN_HIGH;
+    Time_at_PWM_Start = micros();                                                 // Record the time the Pulseout started           
+  }
+  
+  //--- Code to keep PID_Updates synchronised to lie outside packet receives (0-14.4ms). So perform PID_Updates at 17ms and 37ms within our 40ms period 
+  unsigned long Start_Time_of_Last_Fully_Received_Packet = IR_Rx.Packet_Start_Time();
+  unsigned long Time_Since_Start_of_Last_Fully_Received_Packet = micros() - Start_Time_of_Last_Fully_Received_Packet;
+  
+  if(Time_Since_Start_of_Last_Fully_Received_Packet <= 40000)                     // Ture if we're not receiving a packet right now but one has recently finished being received (< 24.6ms ago).                                                                       
+  {
+    if(Run_Next_PID - Start_Time_of_Last_Fully_Received_Packet > 20000)           // True only for the 37ms pulse
+    {
+      if(Run_Next_PID - Start_Time_of_Last_Fully_Received_Packet < 37000)         // This should be the 37ms PID_Update but it's a bit early 
+        Run_Next_PID += 300;                                                      // So Shift all PID_Updates a bit later 
+      else if(Run_Next_PID - Start_Time_of_Last_Fully_Received_Packet > 38000)    // This should be the 37ms PID_Update but it's a bit late
+        Run_Next_PID -= 300;                                                      // So Shift all PID_Updates a bit earlier 
     }
-    else {
-      Toggle = 0;
-    }          
   }
 
-//----------
+  Run_Next_PID += 20000;                                                               
+  //--- 
+
   if(MOTORS_ENABLED)  
   {
+    delta_t = micros() - Time_at_Motor_Update;  
+    Time_at_Motor_Update = micros();
+    
     float Error, Output, dInput;
-    static float ErrorSum, LastYaw; 
+    static float ErrorSum, LastYaw;
   
     if(Upside_Down()) {
       float Inverted_Yaw_setpoint = 180.0 - Yaw_setpoint;
@@ -556,7 +568,7 @@ void PID_Routine()
     #endif
   }
 
-  // Blocking code to finish generation of a PWM pulse. This requires the PID algorithm to be called regularly! MUST BE USING IR!   
+  // Blocking code to finish generation of a PWM pulse. This requires the PID algorithm to be called regularly! MUST BE USING IR! And Stops working should Low Battery occur.   
   if(PWM_PIN_IS_HIGH) {    
     while(micros() - Time_at_PWM_Start < PWM_Pulse_Width) {}
     PWM_PIN_LOW;             
@@ -578,19 +590,19 @@ void Update_PID_Values(char Button_Info)
 {
   if(Button_Info & 0b100)  {                                                      // If Z_Button pressed on GC controller
     if((Button_Info & 0b11) == 0b11)  {                                           // B button
-      Kp -= 0.002;
+      Kp -= 0.004;
       Kp = max(Kp, 0.0);                                                          // Constrain the min value to 0
       if(Kp > 0.0)                                                                // Don't flash light if we've reached zero
         digitalWrite(LED, !digitalRead(LED));
     }
     if((Button_Info & 0b11) == 0b01)  {                                           // Y button
-      Ki -= 8.0e-10;
+      Ki -= 1.6e-9;
       Ki = max(Ki, 0.0);
       if(Ki > 0.0)
         digitalWrite(LED, !digitalRead(LED));
     }
     if((Button_Info & 0b11) == 0b10)  {                                           // X button 
-      Kd -= 1.0e2;
+      Kd -= 2.0e2;
       Kd = max(Kd, 0.0);
       if(Kd > 0.0)
         digitalWrite(LED, !digitalRead(LED));
@@ -598,15 +610,15 @@ void Update_PID_Values(char Button_Info)
   }
   else  {
     if((Button_Info & 0b11) == 0b11)  {                                           // B button
-      Kp += 0.002;
+      Kp += 0.004;
       digitalWrite(LED, !digitalRead(LED));
     }
     if((Button_Info & 0b11) == 0b01)  {                                           // Y button
-      Ki += 8.0e-10;
+      Ki += 1.6e-9;
       digitalWrite(LED, !digitalRead(LED));
     }
     if((Button_Info & 0b11) == 0b10)  {                                           // X button 
-      Kd += 1.0e2;
+      Kd += 2.0e2;
       digitalWrite(LED, !digitalRead(LED));
     } 
   }

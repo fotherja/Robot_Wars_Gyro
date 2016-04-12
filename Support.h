@@ -12,8 +12,8 @@
 
 #define   MOTOR_BEEP_AMPLITUDE        100                                         // 0 - 125 full range 
 #define   ROLLING_AVG_FILTER_LENGTH   5
-#define   IR_UPDATE_PERIOD            38
-#define   PPM_UPDATE_PERIOD           38
+#define   IR_UPDATE_PERIOD            40
+#define   PPM_UPDATE_PERIOD           40
 
 //--- Low_Battery() related constants:
 #define   VOLTAGE_SENSE_CONSTANT      10.08                                       // 24.71; - This is the value for the Green LED GMC that I built 1st
