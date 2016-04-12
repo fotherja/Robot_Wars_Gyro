@@ -33,7 +33,7 @@ The IR transmitter code is available at https://github.com/fotherja/Robot_Wars_I
 Further to this, the attached motors will beep once if RF control has been detected and twice for IR
 
 # Code Discussion:
-The code uses a PID control algorithm running at 100Hz to to keep the robot pointing in the direction stored in the global variable, Yaw_Setpoint. The remote control (IR or RF) changes this variable and the robot attempts to follow. The other input is the speed value, which just moves the robot back and forth.
+The code uses a PID control algorithm running at 50Hz to to keep the robot pointing in the direction stored in the global variable, Yaw_Setpoint. The remote control (IR or RF) changes this variable and the robot attempts to follow. The other input is the speed value, which just moves the robot back and forth.
 
 The measured Yaw is also updated at 100Hz by the DMP on the 6050 IMU together with some additional processing on the Arduino. The PID algorithm works to minimsie the Error = Yaw_setpoint - Yaw. In reality it's a bit more complicated than this since the motors must act to turn the robot in whichever direction will turn the robot to Yaw_setpoint fastest, and we've got to adjust things slightly if the robot is upside down.
 
@@ -43,11 +43,11 @@ If RF mode is used, interrupts on each of the connected channels measure the pul
 
 If IR mode is used, when the start of a packet is detected a timer is started which interrupts every sub-bit in the manchester encoded signal. If the average high time > average low time for the previous sub-bit then we deduce a 1 was sent. This is repeated until the entire packet has been received. The sub-bit string is then decoded to extract the data. 10 = 1, 01 = 0, anything else must be erronous. Searching for the start bit only occurs a couple of ms before the next start bit is due to arrive reducing the chances of a accidental packet receive process being launched. 
 
-Mancester encoding is good for the IR receive modules, it's good for error detection, and hence this is why it was chosen. Currrently the packet period is 40ms, the half bit period is 400us. The start bit is 200/600us for ch 1, or 600/200us for ch 2, and all together there is 21 bits (16.8ms): 1 start, 8 Yaw_setpoint, 8 speed, 4 button bits. 2 channels are supported by interlacing packets for each robot between each other.
+Mancester encoding is good for the IR receive modules, it's good for error detection, and hence this is why it was chosen. Currrently the packet period is 40ms, the half bit period is 400us. The start bit is 200/600us for ch 1, or 600/200us for ch 2, and all together there is 17 bits (14.4ms) in a packet. Type A Packets contain: 8 Yaw_setpoint, 8 speed & 1 Packet Type bit. Type B Packets contain: 8 PCM Pulsewidth bits, 3 PID Tuning on the fly bits, some unused bits and a Packet Type bit. 2 channels are supported by interlacing packets for each robot between each other. 
 
 Use of Peripherals:
   - Timer0 - delay(), millis(), micros()
   - Timer1 - motor drive PWM
-  - Timer2 - IR receiving and ESC PWM output.
+  - Timer2 - IR receiving.
 
 
