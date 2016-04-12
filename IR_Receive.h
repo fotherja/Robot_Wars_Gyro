@@ -17,6 +17,8 @@ class IR_Receive {
   public:
     IR_Receive();
     long Check_Data();                                                            // Checks if data is available and returns it if so.
+    unsigned long Packet_Start_Time();                                            // Returns the micros() start time of the last successfully received packet.
+    void Switch_Channel(char new_channel);                                        // Switch channel 1 or 2.
     
     void Timer_Interrupt();
     void Pin_Change_Interrupt();
@@ -29,14 +31,16 @@ class IR_Receive {
     volatile unsigned long  Total_Time_High;                                      // Measures the time spent high during a bit_period. If Total_Time_High > 1/2 * Bit period we assume a 1 was sent. Filters spikes
     volatile unsigned long  TimeA, Time_Diff;
     volatile unsigned long  Encoded_Data[2];
+    volatile unsigned long  Time_at_Packet_Start;
     
     volatile boolean        Decode_Flag;
     volatile boolean        State;
     volatile char           bit_index = 0;
 
-    unsigned int            IR_POST_RX_SILENT_PERIOD = 24000;                     // Time to not listen for after a receive: Transmission period (40ms) - (packet length) - leeway time (~2ms)
+    unsigned int            IR_POST_RX_SILENT_PERIOD = 24000;                     // Time to not listen for after a receive: Transmission period (40ms) - (packet length) - leeway time (1.6ms)
+    unsigned int            IR_PACKET_LENGTH = 14400;                             // Including start bit.
     char                    EXPECTED_BITS = 17;                                   // For IR receiving. The number of bits we expect to receive (not including the start bit)
-    char                    IR_Channel = 1;
+    char                    IR_Channel = 1;                                       // Default Channel to listen on.
 };
 
 IR_Receive::IR_Receive()
@@ -60,13 +64,26 @@ void IR_Receive::Configure_Timer2_Interrupts()
 void IR_Receive::Set_Expected_Bits(char New_Expected_Bits)
 {   
   EXPECTED_BITS = New_Expected_Bits;
-  IR_POST_RX_SILENT_PERIOD = 40000 - (800 * EXPECTED_BITS) - 2000;
+  IR_PACKET_LENGTH = (800 * EXPECTED_BITS + 1);
+  IR_POST_RX_SILENT_PERIOD = 40000 - IR_PACKET_LENGTH - 1600;
 }
 
 //--------------------------------------------------------------------------------
 void IR_Receive::No_Post_Rx_Silence()
 {   
   IR_POST_RX_SILENT_PERIOD = 0;
+}
+
+//--------------------------------------------------------------------------------
+unsigned long IR_Receive::Packet_Start_Time()
+{
+  return(Time_at_Packet_Start);
+}
+
+//--------------------------------------------------------------------------------
+void IR_Receive::Switch_Channel(char new_channel)
+{
+  IR_Channel = new_channel;
 }
 
 //--------------------------------------------------------------------------------
@@ -191,7 +208,7 @@ void IR_Receive::Timer_Interrupt()
 
     if(bit_index == (EXPECTED_BITS * 2))                                          // If this is the first bit... 
     {
-      if(IR_Channel)  {                                                           
+      if(IR_Channel == 1)  {                                                           
         if(Total_Time_High > 475 && Total_Time_High < 625)  {                     // Channel 1 start bits are ~600us long. COULD NARROW THESE WONDOWS DOWN SOMEWHAT.
           Total_Time_High = 0;
           OCR2A = 49;                                                             // Interrupt every 400us from now until the end of the packet. 
@@ -209,7 +226,7 @@ void IR_Receive::Timer_Interrupt()
       bit_index = 0;                                                              // Cancel this receive and search for start bit again.
       Total_Time_High = 0;
       TIMSK2 = 0b00000000;                                                        // Disable OCR2A interrupts      
-      TimeA -= max((IR_POST_RX_SILENT_PERIOD - 1000), 0);                         // Wait for only 1ms before searching for start bits again.
+      TimeA -= IR_POST_RX_SILENT_PERIOD;                                          // Immediately start searching for start bits again.
       return;      
     }    
 
@@ -237,7 +254,9 @@ void IR_Receive::Timer_Interrupt()
       
       Decode_Flag = 1;
       Encoded_Data[0] = DataL; 
-      Encoded_Data[1] = DataH;        
+      Encoded_Data[1] = DataH;
+
+      Time_at_Packet_Start = TimeA - IR_PACKET_LENGTH;
     }
   }
 }

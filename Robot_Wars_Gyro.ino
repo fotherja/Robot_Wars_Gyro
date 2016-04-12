@@ -99,7 +99,6 @@ float Yaw, Yaw_setpoint;                                                        
 
 char RF_Receiver_Connected = 0;                                                   // Gets set by calling the IR_OR_PWM() function at start up. 0 for IR, 1 for 2 channel RF, 2 for 3 channel RF.
 
-char IR_Channel = 1;                                                              // Channels 0 or 1 are supported. 
 int PWM_Pulse_Width = 0;                                                          // If this is set at any point to be between 800-2000, the GMC starts outputing PWM pulses every 20ms of this length
 
 int FwdBckPulseWdth_Safe;                                                         // The Process_PPM routine saves the volatile versions above to these safe copies for later modification and use  
@@ -131,7 +130,7 @@ void ISR_LR();                                                                  
 void setup() 
 {  
   // Uncommenting this enables storage of channel in EEPROM which can be annoying...
-  //IR_Channel = Get_Channel_From_EEPROM(EEPROM_READ, 0);                           // Get channel we're supposed to on. Can be changed by pressing A, B & Z buttons all at the same time on the GC controller
+  // IR_Rx.Switch_Channel(Get_Channel_From_EEPROM(EEPROM_READ, 0));                    
                                                                                     
   // Read PID values from EEPROM.
   Access_EEPROM(EEPROM_READ);
