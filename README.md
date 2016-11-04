@@ -7,7 +7,7 @@ This is the Arduino code for the Gyro Motor Controller (GMC): A gyro stabilised 
 
 # Features:
  - Automatic detection of RF or IR connectivity
- - Automatic detection of 2 channel, 3 channel, or [PPM] in the case of RF control
+ - Automatic detection of 2 channel or 3 channel ctrl in the case of RF control
  - 1S or 2S LiPo low battery detection and ultra-low power shutdown
  - PID algorithm to reach the Yaw_setpoint as fast as possible - can be tuned on the fly via IR
  - A PCM output channel to control a servo or ESC when using IR
