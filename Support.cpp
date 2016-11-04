@@ -68,29 +68,59 @@ int Low_Battery()
 {
 // Returns 0 if battery is sufficiently charged, 1 otherwise. Looks complicated because it also has hysterisis and fast flashes the LED to indicate the problem
 // If there has been low power for 30 seconds we enter a non-recoverable low power sleep mode.
+// Takes a bit of an average of the ADC readings to prevent spurious low readings causing a glitch
   
   static unsigned long Time_at_LED_Change = 0;  
   static long Time_When_Last_Had_Power = millis();
   static bool Low_Battery_Flag = 0;
+  static byte index = 0;
+  static int BVoltage_Buffer[BATTERY_AVG_FILTER_LENGTH];
+  long BVoltage_Avg = 0;   
   
-  float BVoltage = analogRead(Vsense) * VOLTAGE_SENSE_CONSTANT;                   // Convert to millivolts
+  BVoltage_Buffer[index++] = analogRead(Vsense) * VOLTAGE_SENSE_CONSTANT;         // Convert to millivolts and add to buffer
 
   // This section only runs the first time this routine is called. It detects how many cells the battery is made of
   static char Number_Of_Cells = 0;
   if(!Number_Of_Cells) {
-    if(BVoltage >= 5500)
+    if(BVoltage_Avg >= 5500)
       Number_Of_Cells = 2;
     else
       Number_Of_Cells = 1;
   }
-
+  
+  // Perform the averaging:
+  if (Low_Battery_Flag) {                                                         // If the low battery flag has been set - calculate average every call to this function and check...
+    if (index == BATTERY_AVG_FILTER_LENGTH) {
+      index = 0;
+    }
+    
+    for(byte i = 0;i < BATTERY_AVG_FILTER_LENGTH;i++)  {
+       BVoltage_Avg += BVoltage_Buffer[i];
+    }
+    
+    BVoltage_Avg /= BATTERY_AVG_FILTER_LENGTH;    
+  }
+  
+  else if (index == BATTERY_AVG_FILTER_LENGTH)  {                                 // If low battery flag hasn't been set, only check thresholds every BATTERY_AVG_FILTER_LENGTH calls to this function
+    index = 0;
+    for(byte i = 0;i < BATTERY_AVG_FILTER_LENGTH;i++)  {
+       BVoltage_Avg += BVoltage_Buffer[i];
+    }
+    BVoltage_Avg /= BATTERY_AVG_FILTER_LENGTH;
+  }
+  
+  else  {
+    return(0);
+  }
+  
+  // Check Avg Battery voltage against defined setpoints:
   if(Number_Of_Cells == 2)  {
-    if(BVoltage > BATTERY_THRESHOLD_LOW_2S && !Low_Battery_Flag)
+    if(BVoltage_Avg > BATTERY_THRESHOLD_LOW_2S && !Low_Battery_Flag)
       {
         Time_When_Last_Had_Power = millis();                                    
         return(0);
       }
-    if(BVoltage > BATTERY_THRESHOLD_HGH_2S)
+    if(BVoltage_Avg > BATTERY_THRESHOLD_HGH_2S)
       {
         Time_When_Last_Had_Power = millis();
         Low_Battery_Flag = 0;
@@ -98,12 +128,12 @@ int Low_Battery()
       }
   }
   else  {
-    if(BVoltage > BATTERY_THRESHOLD_LOW_1S && !Low_Battery_Flag)
+    if(BVoltage_Avg > BATTERY_THRESHOLD_LOW_1S && !Low_Battery_Flag)
       {
         Time_When_Last_Had_Power = millis();
         return(0);
       }
-    if(BVoltage > BATTERY_THRESHOLD_HGH_1S)
+    if(BVoltage_Avg > BATTERY_THRESHOLD_HGH_1S)
       {
         Time_When_Last_Had_Power = millis();
         Low_Battery_Flag = 0;
@@ -116,7 +146,7 @@ int Low_Battery()
 
   if(millis() - Time_at_LED_Change > 75)
   {
-    digitalWrite(LED, !digitalRead(LED));                                         // Flash LED
+    digitalWrite(LED, !digitalRead(LED));                                         // Fast flash LED
     Time_at_LED_Change = millis();
   }  
 

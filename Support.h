@@ -4,19 +4,22 @@
 
 //--- Defines: -------------------------------------------------------------------
 // User adjustable:
-#define   ROLLING_AVG_FILTER_LENGTH   4                                           // Rolling average filter length. smooths acceleration of motors.
+#define   ROLLING_AVG_FILTER_LENGTH   2                                           // Rolling average filter length. Smooths acceleration of motors.
+#define   BATTERY_AVG_FILTER_LENGTH   5                                           // Smooths the ADC readings of the battery voltage to avoid spurious drops from causing shutdown     
 
 #define   NO_SIGNAL_THESHOLD_PWM      10                                          // Number of erronous PPM signals received before we deduce no signal is being received
 #define   NO_SIGNAL_THESHOLD_IR       10                                          // Number of erronous PPM signals received before we deduce no signal is being received
 #define   NEUTRAL_THRESHOLD_COUNT     20
 
 #define   MOTOR_BEEP_AMPLITUDE        100                                         // 0 - 125 full range 
-#define   ROLLING_AVG_FILTER_LENGTH   5
 #define   IR_UPDATE_PERIOD            40
 #define   PPM_UPDATE_PERIOD           40
 
+#define   DUTY_MAX                    255
+#define   DUTY_MIN                    0
+
 //--- Low_Battery() related constants:
-#define   VOLTAGE_SENSE_CONSTANT      10.08                                       // 24.71; - This is the value for the Green LED GMC that I built 1st
+#define   VOLTAGE_SENSE_CONSTANT      25                                          // 24.71 - This is the value for the Green LED GMC that I built 1st otherwise 10.08 - ROUND TO NEAREST INT
 #define   BATTERY_THRESHOLD_LOW_2S    6300                                        // If voltage falls below this, enter sleep
 #define   BATTERY_THRESHOLD_HGH_2S    7000                                        // If voltage rises above this, turn active again
 #define   BATTERY_THRESHOLD_LOW_1S    3150                                        // If voltage falls below this, enter sleep
@@ -83,6 +86,9 @@ void Beep_Motors(unsigned long Frequency, unsigned long Duration);              
 char Get_Channel_From_EEPROM(char Read_Write, char New_Channel);                  // Writes or reads the current IR channel from/to EEPROM.
 void System_Power_Down(void);                                                     // Completely shuts down the GMC: Gyro, Motor drivers, IR receiver, LED, the arduino clock, all interrupts etc
 void Sleep_6050(void);                                                            // ALTHOUGH this function is in the main file "Robot_Wars_Gyro" or whatever, this needs referencing here
+
+//--- Variables ------------------------------------------------------------------
+
 
 //--- Classes --------------------------------------------------------------------
 

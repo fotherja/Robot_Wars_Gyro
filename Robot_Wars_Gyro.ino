@@ -11,8 +11,9 @@ We only send DataB if there has been a change to the PWM_Pulse_Width, or button 
 Things to know: Will the ESC work through a 4.7K resistor. Is it ok to loose signal completely or must it be at 1000us when not in use?
 
 To Do:
-1) Synchronise PWM out so that it occurs during "free time" Currently getting jitter in the PWM signal
-2) Get Josh's IR bootloader working...
+  - 100Hz PID?
+  - Don't have a timeout but rather hold 1-255 to represent Yaw_Setpoint and 0 to switch off.
+  - Ensure everything is working
 
 Bugs:
  - When turned upside down or something the turning goes all weird. Can't seem to recreate this problem...
@@ -64,8 +65,9 @@ Description:
 #include "Average.h"
 #include "IR_Receive.h"
 
-#define  _REVERSE_MOTOR_POLARITY                                                  // Reverse channels - BIG HERO 6 NEEDS THIS!
+//#define _REVERSE_MOTOR_POLARITY                                                  // Reverse channels - BIG HERO 6 NEEDS THIS!
 
+//############################# VARIABLES ########################################
 //--- IMU6050 Specific: ----------------------------------------------------------
 MPU6050 mpu;
 
@@ -96,7 +98,7 @@ float Kd;                                                                       
 
 float Yaw, Yaw_setpoint;                                                          // The measured Yaw and the desired Yaw provided by the user's stick movements (respectively)
 
-char RF_Receiver_Connected = 0;                                                   // Gets set by calling the IR_OR_PWM() function at start up. 0 for IR, 1 for 2 channel RF, 2 for 3 channel RF.
+char Type_of_Reciever = 0;                                                        // Gets set by calling the IR_OR_PWM() function at start up. 0 for IR, 1 for 2 channel RF, 2 for 3 channel RF.
 
 int PWM_Pulse_Width = 0;                                                          // If this is set at any point to be between 800-2000, the GMC starts outputing PWM pulses every 20ms of this length
 
@@ -114,6 +116,7 @@ Average Filter1(ROLLING_AVG_FILTER_LENGTH);
 Average Filter2(ROLLING_AVG_FILTER_LENGTH);
 IR_Receive IR_Rx;                                                                 // Create instance of the IR_Receive Class which significantly clears up this code.
 
+//############################# ROUTINES #########################################
 //--- Routines -------------------------------------------------------------------
 void setup_6050(void);                                                            // Initialises the DMP6050
 void PID_Routine(void);                                                           // Iterates PID algorithm if enough time has passed since last call and updates the PWM signals to the motors.
@@ -125,6 +128,7 @@ void Access_EEPROM (char Read_Write);                                           
 char Upside_Down();                                                               // Returns 0 if we're upright, 1 otherwise
 void ISR_LR();                                                                    // Interrupt service routine
 
+//############################# FUNCTIONS ########################################
 //--- Setup: ---------------------------------------------------------------------
 void setup() 
 {  
@@ -149,14 +153,13 @@ void setup()
   }
     
   // On startup send to the serial port the current PID parameters. There are 10K resistors so no damage will be done if an RF receiver is attached
-  Serial.begin(115200);
-  delay(250);  
+  Serial.begin(115200); 
   Serial.print("Kp: ");
   Serial.println(float2s(Kp, 4));
   Serial.print("Ki: ");
   Serial.println(float2s(Ki, 4));
   Serial.print("Kd: ");
-  Serial.println(float2s(Kd, 4));
+  Serial.println(float2s(Kd, 4));  
   Serial.end();
   
   setup_6050();
@@ -168,16 +171,12 @@ void setup()
   OCR1B = 128;  
   
   //Initialise Pin directions:
-  pinMode(LED, OUTPUT);
-  
+  pinMode(LED, OUTPUT);  
   pinMode(MotorL, OUTPUT);  
-  pinMode(MotorR, OUTPUT); 
-  
+  pinMode(MotorR, OUTPUT);  
   pinMode(MEnble, OUTPUT);
-
   pinMode(FwdBckIn, INPUT_PULLUP);
   pinMode(LfRghtIn, INPUT_PULLUP); 
-
   digitalWrite(IR_Pos, HIGH);  pinMode(IR_Pos, OUTPUT);                           // Power the IR Receiver using the I/Os themselves. The current is small so it's ok.
   digitalWrite(IR_GND, LOW);   pinMode(IR_GND, OUTPUT);
   pinMode(IR_In, INPUT_PULLUP);
@@ -191,8 +190,10 @@ void setup()
   PCICR = 0b00000101;                                                             // Enable Interrupts on PCI_2 and PCI_0
 
   // Detect whether an IR receiver or RF receiver is connected:
-  IR_OR_PWM();                                                                    // Sets the RF_Receiver_Connected global variable true if using RF, otherwise 0 (BLOCKS until either IR or RF signal present)
-  if(!RF_Receiver_Connected)                                                     
+  
+  IR_OR_PWM();                                                                    // Sets the Type_of_Reciever global variable true if using RF, otherwise 0 (BLOCKS until either IR or RF signal present)
+  
+  if(Type_of_Reciever == IR_CTRL)                                                     
   {
     detachInterrupt(digitalPinToInterrupt(3));                                    // If No RF receiver attached disable the interrupts on these pins and use pin 3 for an ESC PWM signal
     PCMSK2 = 0b00000000; 
@@ -202,27 +203,33 @@ void setup()
     Beep_Motors(4000, 100);                                                       // Beep twice if IR being used (secondary control...)
     delay(100);
   }
+  else if (Type_of_Reciever == RF_3CH_CTRL)
+  {
+    Beep_Motors(2000, 100);                                                 
+    delay(100);    
+  }
 
   Beep_Motors(3000, 100);    
 }
 
 //--- Main: ----------------------------------------------------------------------
-void loop() {
+void loop() 
+{
   // If DMP initialisation failed just run without gyro control
   if (!dmpReady)  {                        
     while(1)  {
       if(!Low_Battery())  { 
-        if(RF_Receiver_Connected) {                                               // If an RF receiver is connected take signals from this as it has better performance than an IR controller
+        if(Type_of_Reciever) {                                                    // If an RF receiver is connected take signals from this as it has better performance than an IR controller
           Process_PPM(); 
                                                                
-          OCR1A = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
-          OCR1B = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);
+          OCR1A = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX);         
+          OCR1B = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX);
         }
         else  {                                                                   // Otherwise we assume an IR receiver is connected. If it's not we shutdown the motors anyway
           Process_IR();                                                   
                       
-          OCR1A = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);         
-          OCR1B = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, 0, 255);             
+          OCR1A = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX);         
+          OCR1B = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX);             
         } 
       }
     }
@@ -230,7 +237,7 @@ void loop() {
 
   while (!mpuInterrupt && fifoCount < packetSize) {                               // wait for MPU interrupt or extra packet(s) available          
     if(!Low_Battery())  { 
-      if(RF_Receiver_Connected) {                                                 // If an RF receiver is connected take signals from this as it has better performance than an IR controller
+      if(Type_of_Reciever) {                                                      // If an RF receiver is connected take signals from this as it has better performance than an IR controller
         Process_PPM();                                             
         PID_Routine();            
       }
@@ -281,12 +288,12 @@ void Process_PPM()
 
   // 1) -----  
   static float Zero_Calibration = 0.0;
-  static char LfRghtPulse, FwdBckPulse, AuxPulse;
+  static byte LfRghtPulse, FwdBckPulse, AuxPulse;
   static int Neutral_Input_Count_PWM = NEUTRAL_THRESHOLD_COUNT; 
   static unsigned long Time_of_last_Update = millis();                            
   static int No_Signal_PWM = NO_SIGNAL_THESHOLD_PWM;                              // Assume no signal at startup
   
-  if(millis() - Time_of_last_Update < PPM_UPDATE_PERIOD) { 
+  if(millis() - Time_of_last_Update <= PPM_UPDATE_PERIOD) { 
     if(No_Signal_PWM > NO_SIGNAL_THESHOLD_PWM || Neutral_Input_Count_PWM >= NEUTRAL_THRESHOLD_COUNT)  {
       DISABLE_MOTORS;
       Yaw_setpoint = Yaw;      
@@ -300,7 +307,7 @@ void Process_PPM()
       FwdBckPulseWdth_Safe = FwdBckPulseWdth - 1500;
       FwdBckPulseWdth = 0;                                                        // If no new values are received this ensures we don't keep using old PWM data
       
-      FwdBckPulseWdth_Safe = FwdBckPulseWdth_Safe / 2;
+      FwdBckPulseWdth_Safe = FwdBckPulseWdth_Safe / 4;
       FwdBckPulse = VALID;                  
     }
   else  {  
@@ -312,10 +319,10 @@ void Process_PPM()
       LfRghtPulseWdth_Safe = LfRghtPulseWdth - 1500;
       LfRghtPulseWdth = 0;
       
-      if(RF_Receiver_Connected != RF_3CH_CTRL)  {
-        Yaw_setpoint += (((float)LfRghtPulseWdth_Safe) * 0.05);                   // Scaling so full stick (+500us) gives 500 degrees per second rate of turn
+      if(Type_of_Reciever != RF_3CH_CTRL)  {
+        Yaw_setpoint += (((float)LfRghtPulseWdth_Safe) * 0.04);                   // Scaling so full stick (+500us) gives 400 degrees per second rate of turn
       }
-      LfRghtPulseWdth_Safe = LfRghtPulseWdth_Safe / 2;     
+      LfRghtPulseWdth_Safe = LfRghtPulseWdth_Safe / 4;     
       LfRghtPulse = VALID;   
     }
   else  {
@@ -328,12 +335,12 @@ void Process_PPM()
   // Reset the zero value on transmitter on/off cycling.
   // How can drift be adjusted for?
 
-  if(RF_Receiver_Connected == RF_3CH_CTRL)  {
+  if(Type_of_Reciever == RF_3CH_CTRL)  {
     if((AuxPulseWdth >= 900) && (AuxPulseWdth <= 2100)) {                         // If we have a pulse within valid range
         AuxPulseWdth_Safe = AuxPulseWdth - 1500;
         AuxPulseWdth = 0;
         
-        AuxPulseWdth_Safe = AuxPulseWdth_Safe / 2;     
+        AuxPulseWdth_Safe = AuxPulseWdth_Safe / 4;     
         AuxPulse = VALID;   
       }
     else  {
@@ -342,9 +349,8 @@ void Process_PPM()
       } 
 
     if(FwdBckPulse && LfRghtPulse && AuxPulse)  {                                 // If we've just received 3 valid pulses, clear the No_Signal count    
-        No_Signal_PWM = 0;
-        
-        // Next, overwrite Yaw_setpoint using joytick data and Zero_Calibration, the latter is updated when the transmitter is cycled off and on.
+        No_Signal_PWM = 0;                                                        // Next, overwrite Yaw_setpoint using joytick data and Zero_Calibration, the latter is updated when the transmitter is cycled off and on.
+               
         Yaw_setpoint = Calculate_Joy_Stick(LfRghtPulseWdth_Safe, AuxPulseWdth_Safe) + Zero_Calibration;          
       }        
   }
@@ -365,9 +371,9 @@ void Process_PPM()
     LED_OFF;                                                                      // Turn LED off if no signal is being received
     DISABLE_MOTORS;                                                               // Disable outputs  
     PWM_Pulse_Width = 0;                                                          // Stop all signals to ESC
-    Zero_Calibration = Yaw_setpoint;                                              // Turning off the signal sets the Zero_Calibration variable
+    Zero_Calibration = Yaw_setpoint;       //should this just be yaw??            // Turning off the signal sets the Zero_Calibration variable
            
-    OCR1A = 128; OCR1B = 128; 
+    OCR1A = 128; OCR1B = 128;                                                 
     return;
   }   
 
@@ -402,13 +408,13 @@ void Process_IR()
 //  2) It checks if any IR Data is being recieved and whether it's valid.       
 //  3) Turns LED on to indiciate circuit is receiving valid IR data from receiver.  
 //  4) If the joysticks go still for a while, idle.   
-
-  // 1) ----- 
+  
   static int Neutral_Input_Count_IR = NEUTRAL_THRESHOLD_COUNT;
   static unsigned long Run_IR_Update = millis() + IR_UPDATE_PERIOD; 
   static int No_Signal_IR = NO_SIGNAL_THESHOLD_IR;                                // Assume no signal at start up
-  
-  if(millis() < Run_IR_Update) { 
+
+  // 1) ----- 
+  if(millis() <= Run_IR_Update) { 
     if(No_Signal_IR > NO_SIGNAL_THESHOLD_IR || Neutral_Input_Count_IR >= NEUTRAL_THRESHOLD_COUNT)  {
       DISABLE_MOTORS;                                                      
       Yaw_setpoint = Yaw;      
@@ -429,9 +435,9 @@ void Process_IR()
       FwdBckPulseWdth_Safe = (int)((IR_Data >> 1) & 0xFF) - 128;
       FwdBckPulseWdth_Safe = (FwdBckPulseWdth_Safe * 3) / 4; 
        
-      static float Old_Yaw_setpoint;
-      LfRghtPulseWdth_Safe = round((Yaw_setpoint - Old_Yaw_setpoint) * 5.0);      // In case the Gyro chip isn't populated this still allows for IR robot control
-      Old_Yaw_setpoint = Yaw_setpoint;        
+      // static float Old_Yaw_setpoint;
+      // LfRghtPulseWdth_Safe = round((Yaw_setpoint - Old_Yaw_setpoint) * 5.0);      // In case the Gyro chip isn't populated this still allows for IR robot control
+      // Old_Yaw_setpoint = Yaw_setpoint;        
     }
     else                // -----------------------------------------------------   If the packet identifier bit is 0 it's a Type B packet:
     {
@@ -458,7 +464,7 @@ void Process_IR()
     return;
   }
 
-  // 4) -----
+  // 4) -----  I BELIEVE I CAN IMPROVE THIS BIT OF CODE BUT DON'T WANT TO MAKE CHANGES AWAY FROM A TEST SETUP################################################################
   if(abs(LfRghtPulseWdth_Safe) <= 10 && abs(FwdBckPulseWdth_Safe) <= 10) {        // If control sticks are in their neurtal position...
     Neutral_Input_Count_IR++;
     
@@ -500,24 +506,27 @@ void PID_Routine()
     return;
 
 //----------
-  if(PWM_Pulse_Width > 800) {                                                     // If a PWM Pulseout is demanded start the pulse here 
-    pinMode(PWM_Pin, OUTPUT);
-    PWM_PIN_HIGH;
-    Time_at_PWM_Start = micros();                                                 // Record the time the Pulseout started           
-  }
+  if(Type_of_Reciever == IR_CTRL)  { 
+    if(PWM_Pulse_Width > 800) {                                                   // If a PWM Pulseout is demanded start the pulse here 
+      pinMode(PWM_Pin, OUTPUT);
+      PWM_PIN_HIGH;
+      Time_at_PWM_Start = micros();                                               // Record the time the Pulseout started           
+    }
   
-  //--- Code to keep PID_Updates synchronised to lie outside packet receives (0-14.4ms). So perform PID_Updates at 17ms and 37ms within our 40ms period 
-  unsigned long Start_Time_of_Last_Fully_Received_Packet = IR_Rx.Packet_Start_Time();
-  unsigned long Time_Since_Start_of_Last_Fully_Received_Packet = micros() - Start_Time_of_Last_Fully_Received_Packet;
+    //--- Code to keep PID_Updates synchronised to lie outside packet receives (0-14.4ms). So perform PID_Updates at 17ms and 37ms within our 40ms period
   
-  if(Time_Since_Start_of_Last_Fully_Received_Packet <= 40000)                     // Ture if we're not receiving a packet right now but one has recently finished being received (< 24.6ms ago).                                                                       
-  {
-    if(Run_Next_PID - Start_Time_of_Last_Fully_Received_Packet > 20000)           // True only for the 37ms pulse
+    unsigned long Start_Time_of_Last_Fully_Received_Packet = IR_Rx.Packet_Start_Time();
+    unsigned long Time_Since_Start_of_Last_Fully_Received_Packet = micros() - Start_Time_of_Last_Fully_Received_Packet;
+    
+    if(Time_Since_Start_of_Last_Fully_Received_Packet <= 40000)                   // Ture if we're not receiving a packet right now but one has recently finished being received (< 24.6ms ago).                                                                       
     {
-      if(Run_Next_PID - Start_Time_of_Last_Fully_Received_Packet < 37000)         // This should be the 37ms PID_Update but it's a bit early 
-        Run_Next_PID += 300;                                                      // So Shift all PID_Updates a bit later 
-      else if(Run_Next_PID - Start_Time_of_Last_Fully_Received_Packet > 38000)    // This should be the 37ms PID_Update but it's a bit late
-        Run_Next_PID -= 300;                                                      // So Shift all PID_Updates a bit earlier 
+      if(Run_Next_PID - Start_Time_of_Last_Fully_Received_Packet > 20000)         // True only for the 37ms pulse
+      {
+        if(Run_Next_PID - Start_Time_of_Last_Fully_Received_Packet < 37000)       // This should be the 37ms PID_Update but it's a bit early 
+          Run_Next_PID += 300;                                                    // So Shift all PID_Updates a bit later 
+        else if(Run_Next_PID - Start_Time_of_Last_Fully_Received_Packet > 38000)  // This should be the 37ms PID_Update but it's a bit late
+          Run_Next_PID -= 300;                                                    // So Shift all PID_Updates a bit earlier 
+      }
     }
   }
 
@@ -560,19 +569,20 @@ void PID_Routine()
     LfRghtPulseWdth_Safe = constrain(LfRghtPulseWdth_Safe, -100, 100);    
 
     #ifndef _REVERSE_MOTOR_POLARITY         
-      OCR1A = Filter1.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));
-      OCR1B = Filter2.Rolling_Average(constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));
+      OCR1A = Filter1.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX));
+      OCR1B = Filter2.Rolling_Average(constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX));
     #else
-      OCR1A = Filter1.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, 0, 255));
-      OCR1B = Filter2.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp - LfRghtPulseWdth_Safe, 0, 255));
+      OCR1A = Filter1.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX));
+      OCR1B = Filter2.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp - LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX));
     #endif
   }
 
-  // Blocking code to finish generation of a PWM pulse. This requires the PID algorithm to be called regularly! MUST BE USING IR! And Stops working should Low Battery occur.   
+  // Blocking code to finish generation of a PWM pulse. This requires the PID algorithm to be called regularly! Stops working should Low Battery occur.                                             
   if(PWM_PIN_IS_HIGH) {    
     while(micros() - Time_at_PWM_Start < PWM_Pulse_Width) {}
-    PWM_PIN_LOW;             
-  }   
+    PWM_PIN_LOW;                                                                  // If using RF this won't do anything since the pin shall be configured as an input
+  }
+     
 }
 
 //--------------------------------------------------------------------------------
@@ -627,9 +637,9 @@ void Update_PID_Values(char Button_Info)
 //--------------------------------------------------------------------------------
 void Access_EEPROM (char Read_Write)
 {
-// Bug: When writing new PID values to EEPROM, loosing signal casues a write. The GMC doesn't seem to wake up again...
+// Bug: When writing new PID values to EEPROM, turning the signal off casues a write. The GMC doesn't seem to wake up again...
 //      This only happens when 2 or 3 of the parameters have been altered. Something to do with how long eeprom writes take.
-//      By Writing one value per call, we get around this problem.
+//      By Writing one value per call, we get around this problem. ########################################this might have been because we were previously using EEPROM.put not update - that's very bad! Try again
 
 // If Read_Write = 1 this routine writes the current PID parameters to EEPROM otherwise it reads them
   static char i = 0;
@@ -638,15 +648,15 @@ void Access_EEPROM (char Read_Write)
   {
     switch(i) {
       case 0:
-        EEPROM.put(0, Kp);
+        EEPROM.update(0, Kp);
         i = 1;
         return;
       case 1:
-        EEPROM.put(4, Ki);
+        EEPROM.update(4, Ki);
         i = 2;
         return;
       default:
-        EEPROM.put(8, Kd);
+        EEPROM.update(8, Kd);
         i = 0;
         return;
     }
@@ -694,9 +704,9 @@ void Sleep_6050() {
 }
 
 //--------------------------------------------------------------------------------
-void IR_OR_PWM()  // RF_Receiver_Connected = 0,1,2,3 - IR connectivity, RF 2 channels, RF 3 channels, RF PPM.   
+void IR_OR_PWM()                                                                  // Type_of_Reciever = 0,1,2,3 - IR connectivity, RF 2 channels, RF 3 channels, RF PPM.   
 {
-  delay(200);
+  delay(100);
   
   while(1)                                                                        // Keep looping until either an IR or RF signal is being received since there's no point continuing otherwise!
   {    
@@ -704,25 +714,32 @@ void IR_OR_PWM()  // RF_Receiver_Connected = 0,1,2,3 - IR connectivity, RF 2 cha
     FwdBckPulseWdth = 0;
     AuxPulseWdth = 0;
 
-    LED_OFF;
-    delay(125);
+    LED_OFF;    
+    for(int i = 0; i < 10; i++) {                                                 // Delays 100ms and allows battery sensing to be performed etc
+      Low_Battery();
+      delay(10);
+    }    
+    
     LED_ON;
-    delay(125);
+    for(int i = 0; i < 10; i++) {
+      Low_Battery();
+      delay(10);
+    } 
 
-    if((FwdBckPulseWdth >= 900) && (FwdBckPulseWdth <= 2100)) {                   // If we're receiving RF data return with RF_Receiver_Connected = 1
+    if((FwdBckPulseWdth >= 900) && (FwdBckPulseWdth <= 2100)) {                   // If we're receiving RF data return with Type_of_Reciever = 1
       if((LfRghtPulseWdth >= 900) && (LfRghtPulseWdth <= 2100)) {
-        RF_Receiver_Connected = RF_2CH_CTRL;  
+        Type_of_Reciever = RF_2CH_CTRL;  
         delay(125);                                                               // Allow time for IR mode to be switched off and for an RF ch3 pulse to be captured.
                
         if((AuxPulseWdth >= 900) && (AuxPulseWdth <= 2100)) {
-          RF_Receiver_Connected = RF_3CH_CTRL;      
+          Type_of_Reciever = RF_3CH_CTRL;      
         }   
         return;
       }
     }
       
-    if(IR_Rx.Check_Data())  {                                                     // If we're receiving a proper manchester encoded signal from the IR return with RF_Receiver_Connected = 0;                         
-      RF_Receiver_Connected = IR_CTRL;
+    if(IR_Rx.Check_Data())  {                                                     // If we're receiving a proper manchester encoded signal from the IR return with Type_of_Reciever = 0;                         
+      Type_of_Reciever = IR_CTRL;
       return;      
     }        
   } 
@@ -735,7 +752,7 @@ ISR (PCINT2_vect)                                                               
 {
   static unsigned long Time_at_Rise_FB = 0;
   
-  if (LFRGHTIN_STATE == HIGH)
+  if (LFRGHTIN_STATE)
     Time_at_Rise_FB = micros();
   else
     LfRghtPulseWdth = (int)(micros() - Time_at_Rise_FB);
@@ -746,7 +763,7 @@ void ISR_LR()                                                                   
 {
   static unsigned long Time_at_Rise_LR = 0;
   
-  if (FWDBCKIN_STATE == HIGH)
+  if (FWDBCKIN_STATE)
     Time_at_Rise_LR = micros();
   else
     FwdBckPulseWdth = (int)(micros() - Time_at_Rise_LR);                                 
@@ -767,7 +784,7 @@ ISR (TIMER2_COMPA_vect)                                                         
 //--------------------------------------------------------------------------------
 ISR (PCINT0_vect)                                                                 // IR_Pin Change
 { 
-  if(!RF_Receiver_Connected)  
+  if(!Type_of_Reciever)  
   {
     IR_Rx.Pin_Change_Interrupt();
   }
@@ -775,7 +792,7 @@ ISR (PCINT0_vect)                                                               
   {
     static unsigned long Time_at_Rise_Aux = 0;
     
-    if (AUXIN_STATE == HIGH)
+    if (AUXIN_STATE)
       Time_at_Rise_Aux = micros();
     else
       AuxPulseWdth = (int)(micros() - Time_at_Rise_Aux);     
