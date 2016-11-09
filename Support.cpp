@@ -82,7 +82,7 @@ int Low_Battery()
   // This section only runs the first time this routine is called. It detects how many cells the battery is made of
   static char Number_Of_Cells = 0;
   if(!Number_Of_Cells) {
-    if(BVoltage_Avg >= 5500)
+    if(BVoltage_Buffer[0] >= 5500)
       Number_Of_Cells = 2;
     else
       Number_Of_Cells = 1;
@@ -90,10 +90,11 @@ int Low_Battery()
   
   // Perform the averaging:
   if (Low_Battery_Flag) {                                                         // If the low battery flag has been set - calculate average every call to this function and check...
-    if (index == BATTERY_AVG_FILTER_LENGTH) {
+    if (index >= BATTERY_AVG_FILTER_LENGTH) {
       index = 0;
     }
-    
+
+    BVoltage_Avg = 0;
     for(byte i = 0;i < BATTERY_AVG_FILTER_LENGTH;i++)  {
        BVoltage_Avg += BVoltage_Buffer[i];
     }
@@ -101,8 +102,10 @@ int Low_Battery()
     BVoltage_Avg /= BATTERY_AVG_FILTER_LENGTH;    
   }
   
-  else if (index == BATTERY_AVG_FILTER_LENGTH)  {                                 // If low battery flag hasn't been set, only check thresholds every BATTERY_AVG_FILTER_LENGTH calls to this function
+  else if (index >= BATTERY_AVG_FILTER_LENGTH)  {                                 // If low battery flag hasn't been set, only check thresholds every BATTERY_AVG_FILTER_LENGTH calls to this function
     index = 0;
+
+    BVoltage_Avg = 0;
     for(byte i = 0;i < BATTERY_AVG_FILTER_LENGTH;i++)  {
        BVoltage_Avg += BVoltage_Buffer[i];
     }
@@ -275,22 +278,24 @@ char Get_Channel_From_EEPROM(char Read_Write, char New_Channel)
 
 
 //--------------------------------------------------------------------------------
-float Calculate_Joy_Stick(int LfRghtPulseWdth_Safe, int AuxPulseWdth_Safe)
+float Calculate_Joy_Stick_Angle(int X, int Y)
 {  
-  static float JoyStick_Sq_Magnitude;
-  static float JoyStick_Angle;
+  static float JoyStick_Angle;  
 
-  JoyStick_Sq_Magnitude = pow(LfRghtPulseWdth_Safe, 2.0) + pow(AuxPulseWdth_Safe, 2.0);
-           
-  if(JoyStick_Sq_Magnitude > 900.0)
-  {
-    JoyStick_Angle = atan2(LfRghtPulseWdth_Safe, AuxPulseWdth_Safe) * (180/PI);                // Calculate new value
-  }  
+  JoyStick_Angle = atan2(X, Y) * (180/PI);                                      // Calculate new value
 
   return(JoyStick_Angle);
 }
 
+//--------------------------------------------------------------------------------
+float Calculate_Joy_Stick_Magnitude(int X, int Y)
+{  
+  static float JoyStick_Sq_Magnitude;
 
+  JoyStick_Sq_Magnitude = pow(X, 2.0) + pow(Y, 2.0);
+
+  return(JoyStick_Sq_Magnitude);
+}
 
 
 

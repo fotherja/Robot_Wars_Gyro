@@ -14,14 +14,15 @@ To Do:
   - 100Hz PID?
   - Don't have a timeout but rather hold 1-255 to represent Yaw_Setpoint and 0 to switch off.
   - Ensure everything is working
+  - Add Josh's IR Bootloader.
+  - Test RF stuff. No gyro, 3 channel, 2 channel etc. Is zeroing working? 
+  - Get 2 IR controlled robots working at the same time!
 
 Bugs:
  - When turned upside down or something the turning goes all weird. Can't seem to recreate this problem...
 
 Analysis:
   - Current draw in sleep is incredibly low, I can't measure it! Current draw with 4 wheels at full speed in the air ~400mA
-  - Test whether ESC stuff is working ok and whether it works through the resistors etc.
-  - Test RF stuff. No gyro, 3 channel, 2 channel etc.
 
 Use of Peripherals:
   - Timer0 - delay(), millis(), micros()
@@ -37,6 +38,8 @@ Description:
    - IR receiver (3.3v, GND, Signal)
    
   The GMC receives from a RF receiver if one is connected otherwise it resorts to receiving from an IR receiver. 
+  There are 2 types of RF control: Rate control and Joystick control. Which mode is impliemented depends on whether
+  The IR_In pin is connected High or Low. It is internally pulled up and this defaults to Joysick control.
   
   All the GMC really does is act as a gyro stabilised mixer & motor driver for small robots. It uses a PID
   control algorithm running at 100Hz to to keep the robot pointing in the direction stored in the global variable, 
@@ -138,17 +141,20 @@ void setup()
   // Read PID values from EEPROM.
   Access_EEPROM(EEPROM_READ);
 
+  Kp = -0.1;  //################################################################  A quick hack to ensure EEPROM is writen and these default values are used. 
+              //################################################################  On frsh GMCs the values were NaN but that wasn't triggering these if statements
+  
   // If the values are ridiculous we assume they haven't been written into EEPROM yet so we set them to defaults and burn them in
   if(Kp <= 0.0 || Kp >= 5.0)  {
-    Kp = 1.0f; Ki = 1.0e-7f; Kd = 1.0e5f;
+    Kp = 0.8f; Ki = 0.5e-7f; Kd = 0.5e5f;
     Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);
   }
   if(Ki >= 4.0e-6)  {
-    Kp = 1.0f; Ki = 1.0e-7f; Kd = 1.0e5f;
+    Kp = 0.8f; Ki = 0.5e-7f; Kd = 0.5e5f;
     Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);
   }
   if(Kd >= 2.0e6)  {
-    Kp = 1.0f; Ki = 1.0e-7f; Kd = 1.0e5f;
+    Kp = 0.8f; Ki = 0.5e-7f; Kd = 0.5e5f;
     Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);
   }
     
@@ -159,7 +165,9 @@ void setup()
   Serial.print("Ki: ");
   Serial.println(float2s(Ki, 4));
   Serial.print("Kd: ");
-  Serial.println(float2s(Kd, 4));  
+  Serial.println(float2s(Kd, 4));
+  Serial.print("Battery voltage (mV): ");
+  Serial.println(analogRead(Vsense) * VOLTAGE_SENSE_CONSTANT);  
   Serial.end();
   
   setup_6050();
@@ -200,10 +208,10 @@ void setup()
     pinMode(PWM_Pin, OUTPUT);
     PWM_Pulse_Width = 0;                                                          // Setting this to a value between 800-2000 enables the PWM output. (At any time)
     
-    Beep_Motors(4000, 100);                                                       // Beep twice if IR being used (secondary control...)
+    Beep_Motors(4000, 100);                                                       // Beep twice if IR being used High then Low pitch
     delay(100);
   }
-  else if (Type_of_Reciever == RF_3CH_CTRL)
+  else if (Type_of_Reciever == RF_3CH_CTRL)                                       // Beep twice if 3 Channel RF is being used Low then High pitch
   {
     Beep_Motors(2000, 100);                                                 
     delay(100);    
@@ -216,14 +224,21 @@ void setup()
 void loop() 
 {
   // If DMP initialisation failed just run without gyro control
-  if (!dmpReady)  {                        
+  if (!dmpReady)  { 
+    Beep_Motors(4000, 50);
+    Beep_Motors(3000, 50);
+    Beep_Motors(4000, 50);
+    Beep_Motors(3000, 50);
+    Beep_Motors(4000, 50);
+    Beep_Motors(3000, 50);
+                               
     while(1)  {
       if(!Low_Battery())  { 
         if(Type_of_Reciever) {                                                    // If an RF receiver is connected take signals from this as it has better performance than an IR controller
           Process_PPM(); 
                                                                
-          OCR1A = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX);         
-          OCR1B = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX);
+          OCR1A = constrain(128 + (FwdBckPulseWdth_Safe/4) + (LfRghtPulseWdth_Safe/4), DUTY_MIN, DUTY_MAX);         
+          OCR1B = constrain(128 - (FwdBckPulseWdth_Safe/4) + (LfRghtPulseWdth_Safe/4), DUTY_MIN, DUTY_MAX);
         }
         else  {                                                                   // Otherwise we assume an IR receiver is connected. If it's not we shutdown the motors anyway
           Process_IR();                                                   
@@ -306,8 +321,7 @@ void Process_PPM()
   if((FwdBckPulseWdth >= 900) && (FwdBckPulseWdth <= 2100)) {                     // If we have a pulse within valid range
       FwdBckPulseWdth_Safe = FwdBckPulseWdth - 1500;
       FwdBckPulseWdth = 0;                                                        // If no new values are received this ensures we don't keep using old PWM data
-      
-      FwdBckPulseWdth_Safe = FwdBckPulseWdth_Safe / 4;
+
       FwdBckPulse = VALID;                  
     }
   else  {  
@@ -318,47 +332,56 @@ void Process_PPM()
   if((LfRghtPulseWdth >= 900) && (LfRghtPulseWdth <= 2100)) {                     // If we have a pulse within valid range
       LfRghtPulseWdth_Safe = LfRghtPulseWdth - 1500;
       LfRghtPulseWdth = 0;
-      
-      if(Type_of_Reciever != RF_3CH_CTRL)  {
-        Yaw_setpoint += (((float)LfRghtPulseWdth_Safe) * 0.04);                   // Scaling so full stick (+500us) gives 400 degrees per second rate of turn
-      }
-      LfRghtPulseWdth_Safe = LfRghtPulseWdth_Safe / 4;     
+    
       LfRghtPulse = VALID;   
     }
   else  {
       LfRghtPulse = INVALID;
       No_Signal_PWM++;
-    }                                                              
+    }
 
-//##########################################################################################################
-  // Code to allow for 3rd channel RF. Things to consider:
-  // Reset the zero value on transmitter on/off cycling.
-  // How can drift be adjusted for?
-
-  if(Type_of_Reciever == RF_3CH_CTRL)  {
-    if((AuxPulseWdth >= 900) && (AuxPulseWdth <= 2100)) {                         // If we have a pulse within valid range
-        AuxPulseWdth_Safe = AuxPulseWdth - 1500;
-        AuxPulseWdth = 0;
-        
-        AuxPulseWdth_Safe = AuxPulseWdth_Safe / 4;     
-        AuxPulse = VALID;   
-      }
-    else  {
-        AuxPulse = INVALID;
-        No_Signal_PWM++;
-      } 
-
-    if(FwdBckPulse && LfRghtPulse && AuxPulse)  {                                 // If we've just received 3 valid pulses, clear the No_Signal count    
-        No_Signal_PWM = 0;                                                        // Next, overwrite Yaw_setpoint using joytick data and Zero_Calibration, the latter is updated when the transmitter is cycled off and on.
-               
-        Yaw_setpoint = Calculate_Joy_Stick(LfRghtPulseWdth_Safe, AuxPulseWdth_Safe) + Zero_Calibration;          
-      }        
-  }
+  if((AuxPulseWdth >= 900) && (AuxPulseWdth <= 2100)) {                         // If we have a pulse within valid range
+      AuxPulseWdth_Safe = AuxPulseWdth - 1500;
+      AuxPulseWdth = 0;        
+  
+      AuxPulse = VALID;   
+    }
   else  {
-    if(FwdBckPulse && LfRghtPulse)  {                                             // If we've just received 2 valid pulses, clear the No_Signal count    
-        No_Signal_PWM = 0;  
-      }        
-  }    
+      AuxPulse = INVALID;
+      No_Signal_PWM++;
+    }
+   
+//########################################################################################################## 
+
+  if(FwdBckPulse && LfRghtPulse)  {                                             // If we've just received 2 valid pulses, clear the No_Signal count    
+    No_Signal_PWM = 0;
+
+    if(AuxPulse)  {                                                             // Joystick Control with separate throttle...
+      float Joystick_Sq_Mag = Calculate_Joy_Stick_Magnitude(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe); 
+      if(Joystick_Sq_Mag > 900) 
+      {
+        Yaw_setpoint = Calculate_Joy_Stick_Angle(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe) + Zero_Calibration;
+      }    
+      
+      FwdBckPulseWdth_Safe = AuxPulseWdth_Safe / 4;     
+    }
+    else if(IR_IN_STATE)  {                                                     // If IR_Pin is pulled high use Joystick Control with throttle proportional to deviation
+      float Joystick_Sq_Mag = Calculate_Joy_Stick_Magnitude(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe); 
+      if(Joystick_Sq_Mag > 900) 
+      {
+        Yaw_setpoint = Calculate_Joy_Stick_Angle(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe) + Zero_Calibration;
+      }
+    
+      Joystick_Sq_Mag /= 3900.0;
+      FwdBckPulseWdth_Safe = (int)Joystick_Sq_Mag;  
+      FwdBckPulseWdth_Safe = constrain(FwdBckPulseWdth_Safe, -128, 128);
+    }
+    else  {                                                                     // If IR_Pin is pulled low use rate control...
+      Yaw_setpoint += (((float)LfRghtPulseWdth_Safe) * 0.01);                   // Scaling so full stick (+500us) gives 500 degrees per second rate of turn
+      FwdBckPulseWdth_Safe /= 4;      
+    }
+  }      
+      
 //##########################################################################################################    
        
   if(Yaw_setpoint >= 360.0)                                                       // Keep Yaw_setpoint within 0-360 limits
@@ -371,14 +394,14 @@ void Process_PPM()
     LED_OFF;                                                                      // Turn LED off if no signal is being received
     DISABLE_MOTORS;                                                               // Disable outputs  
     PWM_Pulse_Width = 0;                                                          // Stop all signals to ESC
-    Zero_Calibration = Yaw_setpoint;       //should this just be yaw??            // Turning off the signal sets the Zero_Calibration variable
+    Zero_Calibration = Yaw;                                                       // Turning off the signal sets the Zero_Calibration variable
            
     OCR1A = 128; OCR1B = 128;                                                 
     return;
   }   
 
   // 4) -----
-  if(abs(LfRghtPulseWdth_Safe) <= 10 && abs(FwdBckPulseWdth_Safe) <= 10) {        // If control sticks are in their neurtal position...
+  if(abs(LfRghtPulseWdth_Safe) <= 40 && abs(FwdBckPulseWdth_Safe) <= 40) {        // If control sticks are in their neurtal position...
     Neutral_Input_Count_PWM++;
     
     if(Neutral_Input_Count_PWM >= NEUTRAL_THRESHOLD_COUNT) {
@@ -454,11 +477,15 @@ void Process_IR()
   }
   
   // 3) -----
-  if(No_Signal_IR > NO_SIGNAL_THESHOLD_IR)  {     
+  if(No_Signal_IR == NO_SIGNAL_THESHOLD_IR)  {
+    Access_EEPROM(EEPROM_WRITE);                                                  // Write PID parameters to EEPROM if they have been updated.    
+    Access_EEPROM(EEPROM_WRITE);
+    Access_EEPROM(EEPROM_WRITE);
+  }  
+  else if(No_Signal_IR > NO_SIGNAL_THESHOLD_IR)  {     
     LED_OFF;                                                                      // Turn LED off if no signal is being received
     DISABLE_MOTORS;                                                               // Disable outputs  
     PWM_Pulse_Width = 0;                                                          // Stop all signals to ESC. OR SHOULD WE JUST SET TO 1000?
-    Access_EEPROM(EEPROM_WRITE);                                                  // Write PID parameters to EEPROM if they have been updated.
 
     OCR1A = 128; OCR1B = 128;    
     return;
@@ -648,15 +675,15 @@ void Access_EEPROM (char Read_Write)
   {
     switch(i) {
       case 0:
-        EEPROM.update(0, Kp);
+        EEPROM.put(0, Kp);
         i = 1;
         return;
       case 1:
-        EEPROM.update(4, Ki);
+        EEPROM.put(4, Ki);
         i = 2;
         return;
       default:
-        EEPROM.update(8, Kd);
+        EEPROM.put(8, Kd);
         i = 0;
         return;
     }
@@ -712,24 +739,18 @@ void IR_OR_PWM()                                                                
   {    
     LfRghtPulseWdth = 0;
     FwdBckPulseWdth = 0;
-    AuxPulseWdth = 0;
-
-    LED_OFF;    
-    for(int i = 0; i < 10; i++) {                                                 // Delays 100ms and allows battery sensing to be performed etc
-      Low_Battery();
-      delay(10);
-    }    
+    AuxPulseWdth = 0;   
     
     LED_ON;
-    for(int i = 0; i < 10; i++) {
+    for(int i = 0; i < 10; i++) {                                                 // Delays 200ms and allows battery sensing to be performed etc
       Low_Battery();
-      delay(10);
+      delay(20);
     } 
 
     if((FwdBckPulseWdth >= 900) && (FwdBckPulseWdth <= 2100)) {                   // If we're receiving RF data return with Type_of_Reciever = 1
       if((LfRghtPulseWdth >= 900) && (LfRghtPulseWdth <= 2100)) {
         Type_of_Reciever = RF_2CH_CTRL;  
-        delay(125);                                                               // Allow time for IR mode to be switched off and for an RF ch3 pulse to be captured.
+        delay(200);                                                               // Allow time for IR mode to be switched off and for an RF ch3 pulse to be captured.
                
         if((AuxPulseWdth >= 900) && (AuxPulseWdth <= 2100)) {
           Type_of_Reciever = RF_3CH_CTRL;      
@@ -741,7 +762,13 @@ void IR_OR_PWM()                                                                
     if(IR_Rx.Check_Data())  {                                                     // If we're receiving a proper manchester encoded signal from the IR return with Type_of_Reciever = 0;                         
       Type_of_Reciever = IR_CTRL;
       return;      
-    }        
+    }  
+
+    LED_OFF;    
+    for(int i = 0; i < 10; i++) {                                                 
+      Low_Battery();
+      delay(20);
+    }           
   } 
 }
 
