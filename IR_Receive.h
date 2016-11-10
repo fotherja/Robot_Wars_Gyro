@@ -202,7 +202,7 @@ void IR_Receive::Timer_Interrupt()
     Time_Diff = micros() - TimeA;
     TimeA = Time_Diff + TimeA;                                                    // This is faster than TimeA = micros() and more accurate
 
-    if(State == HIGH) {   //#########################################################################################This shouldn't be == HIGH - it should never work like this!
+    if(State) {   //############# THIS WAS == HIGH BUT I'VE CHANGED IT - BUT NOT TESTED #####################This shouldn't be == HIGH - it should never work like this!
       Total_Time_High += Time_Diff;  
     }
 

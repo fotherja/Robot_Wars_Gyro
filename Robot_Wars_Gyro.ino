@@ -17,6 +17,7 @@ To Do:
   - Add Josh's IR Bootloader.
   - Test RF stuff. No gyro, 3 channel, 2 channel etc. Is zeroing working? 
   - Get 2 IR controlled robots working at the same time!
+  - If Kp etc is NaN - Ensure they get written to as default values
 
 Bugs:
  - When turned upside down or something the turning goes all weird. Can't seem to recreate this problem...
@@ -140,26 +141,24 @@ void setup()
                                                                                     
   // Read PID values from EEPROM.
   Access_EEPROM(EEPROM_READ);
-
-  Kp = -0.1;  //################################################################  A quick hack to ensure EEPROM is writen and these default values are used. 
-              //################################################################  On frsh GMCs the values were NaN but that wasn't triggering these if statements
   
   // If the values are ridiculous we assume they haven't been written into EEPROM yet so we set them to defaults and burn them in
-  if(Kp <= 0.0 || Kp >= 5.0)  {
+  if(Kp <= 0.0 || Kp >= 5.0 || isnan(Kp))  {
     Kp = 0.8f; Ki = 0.5e-7f; Kd = 0.5e5f;
     Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);
   }
-  if(Ki >= 4.0e-6)  {
+  if(Ki >= 4.0e-6 || isnan(Ki))  {
     Kp = 0.8f; Ki = 0.5e-7f; Kd = 0.5e5f;
     Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);
   }
-  if(Kd >= 2.0e6)  {
+  if(Kd >= 2.0e6 || isnan(Kd))  {
     Kp = 0.8f; Ki = 0.5e-7f; Kd = 0.5e5f;
     Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);
   }
     
   // On startup send to the serial port the current PID parameters. There are 10K resistors so no damage will be done if an RF receiver is attached
-  Serial.begin(115200); 
+  Serial.begin(115200);
+  Serial.println(); 
   Serial.print("Kp: ");
   Serial.println(float2s(Kp, 4));
   Serial.print("Ki: ");
@@ -356,18 +355,20 @@ void Process_PPM()
   if(FwdBckPulse && LfRghtPulse)  {                                             // If we've just received 2 valid pulses, clear the No_Signal count    
     No_Signal_PWM = 0;
 
-    if(AuxPulse)  {                                                             // Joystick Control with separate throttle...
-      float Joystick_Sq_Mag = Calculate_Joy_Stick_Magnitude(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe); 
-      if(Joystick_Sq_Mag > 900) 
+    if(AuxPulse)                                                                // Joystick Control with separate throttle...
+    {
+      long Joystick_Sq_Mag = Calculate_Joy_Stick_Magnitude(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe); 
+      if(Joystick_Sq_Mag > 160000) 
       {
         Yaw_setpoint = Calculate_Joy_Stick_Angle(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe) + Zero_Calibration;
       }    
       
       FwdBckPulseWdth_Safe = AuxPulseWdth_Safe / 4;     
     }
-    else if(IR_IN_STATE)  {                                                     // If IR_Pin is pulled high use Joystick Control with throttle proportional to deviation
-      float Joystick_Sq_Mag = Calculate_Joy_Stick_Magnitude(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe); 
-      if(Joystick_Sq_Mag > 900) 
+    else if(!IR_IN_STATE)                                                       // If IR_Pin is pulled low use Joystick Control with throttle proportional to deviation
+    {
+      long Joystick_Sq_Mag = Calculate_Joy_Stick_Magnitude(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe); 
+      if(Joystick_Sq_Mag > 160000) 
       {
         Yaw_setpoint = Calculate_Joy_Stick_Angle(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe) + Zero_Calibration;
       }
@@ -376,7 +377,8 @@ void Process_PPM()
       FwdBckPulseWdth_Safe = (int)Joystick_Sq_Mag;  
       FwdBckPulseWdth_Safe = constrain(FwdBckPulseWdth_Safe, -128, 128);
     }
-    else  {                                                                     // If IR_Pin is pulled low use rate control...
+    else                                                                        // If IR_Pin is pulled high use rate control...
+    {
       Yaw_setpoint += (((float)LfRghtPulseWdth_Safe) * 0.01);                   // Scaling so full stick (+500us) gives 500 degrees per second rate of turn
       FwdBckPulseWdth_Safe /= 4;      
     }
@@ -401,7 +403,7 @@ void Process_PPM()
   }   
 
   // 4) -----
-  if(abs(LfRghtPulseWdth_Safe) <= 40 && abs(FwdBckPulseWdth_Safe) <= 40) {        // If control sticks are in their neurtal position...
+  if(abs(LfRghtPulseWdth_Safe) <= 30 && abs(FwdBckPulseWdth_Safe) <= 30) {        // If control sticks are in their neurtal position...
     Neutral_Input_Count_PWM++;
     
     if(Neutral_Input_Count_PWM >= NEUTRAL_THRESHOLD_COUNT) {
@@ -533,7 +535,8 @@ void PID_Routine()
     return;
 
 //----------
-  if(Type_of_Reciever == IR_CTRL)  { 
+  if(Type_of_Reciever == IR_CTRL)  
+  { 
     if(PWM_Pulse_Width > 800) {                                                   // If a PWM Pulseout is demanded start the pulse here 
       pinMode(PWM_Pin, OUTPUT);
       PWM_PIN_HIGH;
@@ -580,13 +583,14 @@ void PID_Routine()
       Error = -Turn_Error(Inverted_Yaw_setpoint, Yaw);
       dInput = (LastYaw - Yaw) / delta_t;
     }
-    else  {
+    else  
+    {
       Error = Turn_Error(Yaw_setpoint, Yaw); 
       dInput = (Yaw - LastYaw) / delta_t;
     }  
     
-    ErrorSum += (Error * Ki) * delta_t;                                           // delta_t ~= 10_000, Also "bumpless"                                                     
-    ErrorSum = constrain(ErrorSum, -100.0, 100.0);
+    ErrorSum += (Error * Ki) * delta_t;                                                                                               
+    ErrorSum = constrain(ErrorSum, -75.0, 75.0);
     
     LastYaw = Yaw;
     

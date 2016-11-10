@@ -80,7 +80,7 @@
 //--- Routines -------------------------------------------------------------------
 float Turn_Error(float, float);                                                   // From the Yaw & Yaw_setpoint, this routine returns how many degrees we are from where we want to be. 
 float Calculate_Joy_Stick_Angle(int X, int Y);                                    // Given x and y values this returns the angle of the joystick
-float Calculate_Joy_Stick_Magnitude(int X, int Y);                                // Given x and y values this returns a square magnitude of the joystick deviation
+long Calculate_Joy_Stick_Magnitude(int X, int Y);                                // Given x and y values this returns a square magnitude of the joystick deviation
 int Low_Battery(void);                                                            // Returns 0 if battery is sufficiently charged, 1 otherwise. Includes hysterisis & LED flashing for low battery (Non-blocking)
 char * float2s(float f, unsigned int digits);                                     // Converts a float to a string in standard form
 void Beep_Motors(unsigned long Frequency, unsigned long Duration);                // Uses the motors as speakers to produce noise

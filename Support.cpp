@@ -288,11 +288,11 @@ float Calculate_Joy_Stick_Angle(int X, int Y)
 }
 
 //--------------------------------------------------------------------------------
-float Calculate_Joy_Stick_Magnitude(int X, int Y)
+long Calculate_Joy_Stick_Magnitude(int X, int Y)
 {  
-  static float JoyStick_Sq_Magnitude;
+  long JoyStick_Sq_Magnitude;
 
-  JoyStick_Sq_Magnitude = pow(X, 2.0) + pow(Y, 2.0);
+  JoyStick_Sq_Magnitude = (X*X) + (Y*Y);
 
   return(JoyStick_Sq_Magnitude);
 }
