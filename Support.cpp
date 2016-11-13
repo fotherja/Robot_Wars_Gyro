@@ -260,8 +260,7 @@ void Beep_Motors(unsigned long Frequency, unsigned long Duration)
 char Get_Channel_From_EEPROM(char Read_Write, char New_Channel)
 {
 // If Read_Write = 1 this routine writes New_Channel value to EEPROM, if 0 it returns the current channel number
-  char return_val;
-  New_Channel = constrain(New_Channel, 0, 1);
+  char return_val;  
   
   if(Read_Write)
   {
@@ -288,11 +287,11 @@ float Calculate_Joy_Stick_Angle(int X, int Y)
 }
 
 //--------------------------------------------------------------------------------
-long Calculate_Joy_Stick_Magnitude(int X, int Y)
+float Calculate_Joy_Stick_Magnitude(int X, int Y)
 {  
-  long JoyStick_Sq_Magnitude;
+  float JoyStick_Sq_Magnitude;
 
-  JoyStick_Sq_Magnitude = (X*X) + (Y*Y);
+  JoyStick_Sq_Magnitude = pow(X, 2.0) + pow(Y, 2.0);
 
   return(JoyStick_Sq_Magnitude);
 }

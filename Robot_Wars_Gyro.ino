@@ -11,16 +11,12 @@ We only send DataB if there has been a change to the PWM_Pulse_Width, or button 
 Things to know: Will the ESC work through a 4.7K resistor. Is it ok to loose signal completely or must it be at 1000us when not in use?
 
 To Do:
-  - 100Hz PID?
   - Don't have a timeout but rather hold 1-255 to represent Yaw_Setpoint and 0 to switch off.
-  - Ensure everything is working
-  - Add Josh's IR Bootloader.
-  - Test RF stuff. No gyro, 3 channel, 2 channel etc. Is zeroing working? 
   - Get 2 IR controlled robots working at the same time!
-  - If Kp etc is NaN - Ensure they get written to as default values
-
-Bugs:
- - When turned upside down or something the turning goes all weird. Can't seem to recreate this problem...
+  - Fix the EEPROM Read and write nonsense - do we need a delay?
+  - Test the IR stuff. Does the normal control stuff work?
+  - Try running at 100Hz. The ESC doesn't care what the update rate is.
+  - 
 
 Analysis:
   - Current draw in sleep is incredibly low, I can't measure it! Current draw with 4 wheels at full speed in the air ~400mA
@@ -103,6 +99,7 @@ float Kd;                                                                       
 float Yaw, Yaw_setpoint;                                                          // The measured Yaw and the desired Yaw provided by the user's stick movements (respectively)
 
 char Type_of_Reciever = 0;                                                        // Gets set by calling the IR_OR_PWM() function at start up. 0 for IR, 1 for 2 channel RF, 2 for 3 channel RF.
+byte Use_Gyro_Flag = 1;                                                           // If this is set to zero, we stop using gyro compensation and act as a normal motor controller
 
 int PWM_Pulse_Width = 0;                                                          // If this is set at any point to be between 800-2000, the GMC starts outputing PWM pulses every 20ms of this length
 
@@ -122,6 +119,8 @@ IR_Receive IR_Rx;                                                               
 
 //############################# ROUTINES #########################################
 //--- Routines -------------------------------------------------------------------
+void (*boot_bootloader)(void) = (void (*)())0x3c00;                               // Allow the bootloader to be called
+
 void setup_6050(void);                                                            // Initialises the DMP6050
 void PID_Routine(void);                                                           // Iterates PID algorithm if enough time has passed since last call and updates the PWM signals to the motors.
 void Process_PPM(void);                                                           // Validates and processes PPM signals received by the interrupt routines. Updates Yaw_setpoint. Returns 0 if no PPM signal. 
@@ -141,7 +140,7 @@ void setup()
                                                                                     
   // Read PID values from EEPROM.
   Access_EEPROM(EEPROM_READ);
-  
+
   // If the values are ridiculous we assume they haven't been written into EEPROM yet so we set them to defaults and burn them in
   if(Kp <= 0.0 || Kp >= 5.0 || isnan(Kp))  {
     Kp = 0.8f; Ki = 0.5e-7f; Kd = 0.5e5f;
@@ -165,10 +164,11 @@ void setup()
   Serial.println(float2s(Ki, 4));
   Serial.print("Kd: ");
   Serial.println(float2s(Kd, 4));
+  Serial.print("Channel in EEPROM: ");
+  Serial.println(Get_Channel_From_EEPROM(EEPROM_READ, 0));
   Serial.print("Battery voltage (mV): ");
   Serial.println(analogRead(Vsense) * VOLTAGE_SENSE_CONSTANT);  
   Serial.end();
-  
   setup_6050();
   
   //Setup timer1 Registers for motor PWMing
@@ -187,7 +187,6 @@ void setup()
   digitalWrite(IR_Pos, HIGH);  pinMode(IR_Pos, OUTPUT);                           // Power the IR Receiver using the I/Os themselves. The current is small so it's ok.
   digitalWrite(IR_GND, LOW);   pinMode(IR_GND, OUTPUT);
   pinMode(IR_In, INPUT_PULLUP);
-
   IR_Rx.Configure_Timer2_Interrupts();                                            // Call IR_Rx.Timer_Interrupt() whenever there's a timer2 Compare A match. 
 
   // Pin change interrupts:  
@@ -197,9 +196,7 @@ void setup()
   PCICR = 0b00000101;                                                             // Enable Interrupts on PCI_2 and PCI_0
 
   // Detect whether an IR receiver or RF receiver is connected:
-  
   IR_OR_PWM();                                                                    // Sets the Type_of_Reciever global variable true if using RF, otherwise 0 (BLOCKS until either IR or RF signal present)
-  
   if(Type_of_Reciever == IR_CTRL)                                                     
   {
     detachInterrupt(digitalPinToInterrupt(3));                                    // If No RF receiver attached disable the interrupts on these pins and use pin 3 for an ESC PWM signal
@@ -351,24 +348,28 @@ void Process_PPM()
     }
    
 //########################################################################################################## 
+// Here we decide how to use the PPM data:
+// 1) If there are 3 channels connected use Joystick Control with separate throttle provided by the 3rd channel
+// 2) If only 2 channels connected and AuxPWMIn is pulled low use Joystick Control with throttle proportional to deviation of stick - you can't reverse, feels weird
+// 3) If only 2 channels connected and AuxPWMIn is left to float high then resort to rate control
 
   if(FwdBckPulse && LfRghtPulse)  {                                             // If we've just received 2 valid pulses, clear the No_Signal count    
     No_Signal_PWM = 0;
 
-    if(AuxPulse)                                                                // Joystick Control with separate throttle...
+    if(AuxPulse)                                                                // If we're receiving PPM on Aux_In: Joystick Control with separate throttle...
     {
-      long Joystick_Sq_Mag = Calculate_Joy_Stick_Magnitude(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe); 
-      if(Joystick_Sq_Mag > 160000) 
+      float Joystick_Sq_Mag = Calculate_Joy_Stick_Magnitude(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe); 
+      if(Joystick_Sq_Mag > 20000.0)                                             // Require a stick deviation of ~25% before using it to set Yaw_Setpoint, otherwise erratic.
       {
         Yaw_setpoint = Calculate_Joy_Stick_Angle(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe) + Zero_Calibration;
       }    
       
       FwdBckPulseWdth_Safe = AuxPulseWdth_Safe / 4;     
     }
-    else if(!IR_IN_STATE)                                                       // If IR_Pin is pulled low use Joystick Control with throttle proportional to deviation
+    else if(!AUXIN_STATE)                                                       // If AuxPWMIn is pulled low use Joystick Control with throttle proportional to deviation of stick - feels weird!
     {
-      long Joystick_Sq_Mag = Calculate_Joy_Stick_Magnitude(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe); 
-      if(Joystick_Sq_Mag > 160000) 
+      float Joystick_Sq_Mag = Calculate_Joy_Stick_Magnitude(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe); 
+      if(Joystick_Sq_Mag > 20000.0) 
       {
         Yaw_setpoint = Calculate_Joy_Stick_Angle(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe) + Zero_Calibration;
       }
@@ -377,7 +378,7 @@ void Process_PPM()
       FwdBckPulseWdth_Safe = (int)Joystick_Sq_Mag;  
       FwdBckPulseWdth_Safe = constrain(FwdBckPulseWdth_Safe, -128, 128);
     }
-    else                                                                        // If IR_Pin is pulled high use rate control...
+    else                                                                        // If AuxPWMIn is disconnected and therefore pulled high default to rate control...
     {
       Yaw_setpoint += (((float)LfRghtPulseWdth_Safe) * 0.01);                   // Scaling so full stick (+500us) gives 500 degrees per second rate of turn
       FwdBckPulseWdth_Safe /= 4;      
@@ -395,7 +396,6 @@ void Process_PPM()
   if(No_Signal_PWM > NO_SIGNAL_THESHOLD_PWM)  {     
     LED_OFF;                                                                      // Turn LED off if no signal is being received
     DISABLE_MOTORS;                                                               // Disable outputs  
-    PWM_Pulse_Width = 0;                                                          // Stop all signals to ESC
     Zero_Calibration = Yaw;                                                       // Turning off the signal sets the Zero_Calibration variable
            
     OCR1A = 128; OCR1B = 128;                                                 
@@ -403,7 +403,7 @@ void Process_PPM()
   }   
 
   // 4) -----
-  if(abs(LfRghtPulseWdth_Safe) <= 30 && abs(FwdBckPulseWdth_Safe) <= 30) {        // If control sticks are in their neurtal position...
+  if(abs(LfRghtPulseWdth_Safe) <= 40 && abs(FwdBckPulseWdth_Safe) <= 40) {        // If control sticks are in their neurtal position...
     Neutral_Input_Count_PWM++;
     
     if(Neutral_Input_Count_PWM >= NEUTRAL_THRESHOLD_COUNT) {
@@ -460,18 +460,33 @@ void Process_IR()
       FwdBckPulseWdth_Safe = (int)((IR_Data >> 1) & 0xFF) - 128;
       FwdBckPulseWdth_Safe = (FwdBckPulseWdth_Safe * 3) / 4; 
        
-      // static float Old_Yaw_setpoint;
-      // LfRghtPulseWdth_Safe = round((Yaw_setpoint - Old_Yaw_setpoint) * 5.0);      // In case the Gyro chip isn't populated this still allows for IR robot control
-      // Old_Yaw_setpoint = Yaw_setpoint;        
+      static float Old_Yaw_setpoint;
+      LfRghtPulseWdth_Safe = round((Yaw_setpoint - Old_Yaw_setpoint) * 5.0);      // In case the Gyro chip isn't populated or Use_Gyro_Flag = 0, this still allows for IR robot control
+      Old_Yaw_setpoint = Yaw_setpoint;        
     }
     else                // -----------------------------------------------------   If the packet identifier bit is 0 it's a Type B packet:
     {
-      // The rarer type B packet contains an 8 bit PWM pulsewidth & other info bits: [PPPP_PPPP_BBB_XXXXXT] - Where P = Pulsewidth, B = GC Buttons, X = Not used, T = Packet Type
-      PWM_Pulse_Width = map(((IR_Data >> 9) & 0xFF), 0, 255, 1000, 2000);          
+      // The rarer type B packet contains an 8 bit PWM pulsewidth & other info bits: [PPPP_PPPP_BBB_XXNRCT] - Where P = Pulsewidth, B = GC Buttons, X = Not used, T = Packet Type
+      PWM_Pulse_Width = map(((IR_Data >> 9) & 0xFF), 0, 255, 1000, 2000);                                // - N = Use Gyro control, R = Reset & Call bootloader, C = Change Channel
       
       if(unsigned char Button_Bits = ((IR_Data >> 6) & 0x7)) {
         Update_PID_Values(Button_Bits);
-      }                 
+      } 
+
+      if((IR_Data >> 3) & 1)                                                     // Stops Gyro compensation and runs motors like a normal motor controller
+        Use_Gyro_Flag = 0;
+      else
+        Use_Gyro_Flag = 1;
+
+      if((IR_Data >> 2) & 1)  {                                                   // This calls the bootloader and is used if we want to upload code.
+        boot_bootloader();                                                                              
+      }
+      
+      if((IR_Data >> 1) & 1)  {                                                   // This toggles the IR channel that we're using and stores the new value in EEPROM
+        byte Channel_To_Switch_To = !Get_Channel_From_EEPROM(EEPROM_READ, 0);                  
+        IR_Rx.Switch_Channel(Channel_To_Switch_To);                                            
+        Get_Channel_From_EEPROM(EEPROM_WRITE, Channel_To_Switch_To); 
+      }      
     }
   }
   else  {
@@ -504,7 +519,7 @@ void Process_IR()
       if(Neutral_Input_Count_IR % 15 == 0) {                                      // Slow flash LED to indicate the PID algorithm is suspended due to inactivity
         digitalWrite(LED, !digitalRead(LED));      
       }                  
-      return;                                                                     // Return with a zero to disable motor activity
+      return;      
     }   
   }
   else  {
@@ -519,8 +534,8 @@ void Process_IR()
 //--------------------------------------------------------------------------------
 void PID_Routine()
 {
-// So we need LfRghtPulseWdth to adjust itself according to how much error there is. Here's a little PID controller to do that. 
-// It uses the global variable, Yaw_Setpoint & needs FwdBckPulseWdth_Safe for speed control
+// So we need the robot to try to turn itself so its measure Yaw becomes the same as the demanded Yaw_Setpoint. Here's a little PID controller to do that. 
+// Tuning of the PID parameters: Kp, Ki, & Kd massively effect the behaviour of the robot. Tuning on the fly can be done.
 // We deduce whether the device has been flipped by comparing the current gravity vector against the startup gravity vector. If their dot product
 // is -ve we've been flipped. In this case we need to make just a few alterations to the inputs...
 
@@ -534,7 +549,7 @@ void PID_Routine()
   if(micros() < Run_Next_PID)                                                     // Run this routine every 20ms
     return;
 
-//----------
+  //------------------------------------------------------------------------------
   if(Type_of_Reciever == IR_CTRL)  
   { 
     if(PWM_Pulse_Width > 800) {                                                   // If a PWM Pulseout is demanded start the pulse here 
@@ -548,10 +563,8 @@ void PID_Routine()
     unsigned long Start_Time_of_Last_Fully_Received_Packet = IR_Rx.Packet_Start_Time();
     unsigned long Time_Since_Start_of_Last_Fully_Received_Packet = micros() - Start_Time_of_Last_Fully_Received_Packet;
     
-    if(Time_Since_Start_of_Last_Fully_Received_Packet <= 40000)                   // Ture if we're not receiving a packet right now but one has recently finished being received (< 24.6ms ago).                                                                       
-    {
-      if(Run_Next_PID - Start_Time_of_Last_Fully_Received_Packet > 20000)         // True only for the 37ms pulse
-      {
+    if(Time_Since_Start_of_Last_Fully_Received_Packet <= 40000) {                 // Ture if we're not receiving a packet right now but one has recently finished being received (< 24.6ms ago).                                                                       
+      if(Run_Next_PID - Start_Time_of_Last_Fully_Received_Packet > 20000) {       // True only for the 37ms pulse
         if(Run_Next_PID - Start_Time_of_Last_Fully_Received_Packet < 37000)       // This should be the 37ms PID_Update but it's a bit early 
           Run_Next_PID += 300;                                                    // So Shift all PID_Updates a bit later 
         else if(Run_Next_PID - Start_Time_of_Last_Fully_Received_Packet > 38000)  // This should be the 37ms PID_Update but it's a bit late
@@ -559,11 +572,10 @@ void PID_Routine()
       }
     }
   }
-
+  //------------------------------------------------------------------------------
   Run_Next_PID += 20000;                                                               
-  //--- 
 
-  if(MOTORS_ENABLED)  
+  if(MOTORS_ENABLED && Use_Gyro_Flag)  
   {
     delta_t = micros() - Time_at_Motor_Update;  
     Time_at_Motor_Update = micros();
@@ -571,7 +583,8 @@ void PID_Routine()
     float Error, Output, dInput;
     static float ErrorSum, LastYaw;
   
-    if(Upside_Down()) {
+    if(Upside_Down()) 
+    {
       float Inverted_Yaw_setpoint = 180.0 - Yaw_setpoint;
       
       while(Inverted_Yaw_setpoint >= 360.0)                                       // Keep Inverted_Yaw_setpoint within 0-360 limits
@@ -607,11 +620,29 @@ void PID_Routine()
       OCR1B = Filter2.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp - LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX));
     #endif
   }
+  
+  else if(MOTORS_ENABLED)
+  {
+    int LfRghtPulseWdth_Safe_Temp = LfRghtPulseWdth_Safe;
+    
+    if(Upside_Down()) {             
+      FwdBckPulseWdth_Safe_Temp = -FwdBckPulseWdth_Safe_Temp;
+      LfRghtPulseWdth_Safe_Temp = -LfRghtPulseWdth_Safe_Temp;  
+    }
+    
+    #ifndef _REVERSE_MOTOR_POLARITY         
+      OCR1A = Filter1.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX));
+      OCR1B = Filter2.Rolling_Average(constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX));
+    #else
+      OCR1A = Filter1.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX));
+      OCR1B = Filter2.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp - LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX));
+    #endif      
+  }
 
   // Blocking code to finish generation of a PWM pulse. This requires the PID algorithm to be called regularly! Stops working should Low Battery occur.                                             
-  if(PWM_PIN_IS_HIGH) {    
+  if(PWM_Pulse_Width) {    
     while(micros() - Time_at_PWM_Start < PWM_Pulse_Width) {}
-    PWM_PIN_LOW;                                                                  // If using RF this won't do anything since the pin shall be configured as an input
+    PWM_PIN_LOW;                                                                 
   }
      
 }
@@ -670,7 +701,7 @@ void Access_EEPROM (char Read_Write)
 {
 // Bug: When writing new PID values to EEPROM, turning the signal off casues a write. The GMC doesn't seem to wake up again...
 //      This only happens when 2 or 3 of the parameters have been altered. Something to do with how long eeprom writes take.
-//      By Writing one value per call, we get around this problem. ########################################this might have been because we were previously using EEPROM.put not update - that's very bad! Try again
+//      By Writing one value per call, we get around this problem. Maybe we need a little delay between writes. need to investigate.
 
 // If Read_Write = 1 this routine writes the current PID parameters to EEPROM otherwise it reads them
   static char i = 0;

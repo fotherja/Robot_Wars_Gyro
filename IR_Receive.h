@@ -40,7 +40,7 @@ class IR_Receive {
     unsigned int            IR_POST_RX_SILENT_PERIOD = 24000;                     // Time to not listen for after a receive: Transmission period (40ms) - (packet length) - leeway time (1.6ms)
     unsigned int            IR_PACKET_LENGTH = 14400;                             // Including start bit.
     char                    EXPECTED_BITS = 17;                                   // For IR receiving. The number of bits we expect to receive (not including the start bit)
-    char                    IR_Channel = 1;                                       // Default Channel to listen on.
+    char                    IR_Channel = 0;                                       // Default Channel to listen on.
 };
 
 IR_Receive::IR_Receive()
@@ -208,7 +208,7 @@ void IR_Receive::Timer_Interrupt()
 
     if(bit_index == (EXPECTED_BITS * 2))                                          // If this is the first bit... 
     {
-      if(IR_Channel == 1)  {                                                           
+      if(IR_Channel)  {                                                           
         if(Total_Time_High > 475 && Total_Time_High < 625)  {                     // Channel 1 start bits are ~600us long. COULD NARROW THESE WONDOWS DOWN SOMEWHAT.
           Total_Time_High = 0;
           OCR2A = 49;                                                             // Interrupt every 400us from now until the end of the packet. 
