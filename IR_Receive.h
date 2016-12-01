@@ -40,7 +40,7 @@ class IR_Receive {
     unsigned int            IR_POST_RX_SILENT_PERIOD = 24000;                     // Time to not listen for after a receive: Transmission period (40ms) - (packet length) - leeway time (1.6ms)
     unsigned int            IR_PACKET_LENGTH = 14400;                             // Including start bit.
     char                    EXPECTED_BITS = 17;                                   // For IR receiving. The number of bits we expect to receive (not including the start bit)
-    char                    IR_Channel = 0;                                       // Default Channel to listen on.
+    char                    IR_Channel = 1;                                       // Default Channel to listen on.
 };
 
 IR_Receive::IR_Receive()
@@ -202,7 +202,7 @@ void IR_Receive::Timer_Interrupt()
     Time_Diff = micros() - TimeA;
     TimeA = Time_Diff + TimeA;                                                    // This is faster than TimeA = micros() and more accurate
 
-    if(State) {   //############# THIS WAS == HIGH BUT I'VE CHANGED IT - BUT NOT TESTED #####################This shouldn't be == HIGH - it should never work like this!
+    if(State) {   
       Total_Time_High += Time_Diff;  
     }
 

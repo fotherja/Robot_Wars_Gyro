@@ -296,14 +296,41 @@ float Calculate_Joy_Stick_Magnitude(int X, int Y)
   return(JoyStick_Sq_Magnitude);
 }
 
+//--------------------------------------------------------------------------------
+void Configure_IO_Pins()
+{
+  pinMode(LED, OUTPUT);  
+  pinMode(MotorL, OUTPUT);  
+  pinMode(MotorR, OUTPUT);  
+  pinMode(MEnble, OUTPUT);
+  
+  pinMode(FwdBckIn, INPUT_PULLUP);
+  pinMode(LfRghtIn, INPUT_PULLUP);
+  pinMode(IR_In, INPUT_PULLUP);
+     
+  digitalWrite(IR_Pos, HIGH); pinMode(IR_Pos, OUTPUT);                            // Power the IR Receiver using the I/Os themselves. The current is small so it's ok.
+  digitalWrite(IR_GND, LOW);  pinMode(IR_GND, OUTPUT);  
+}
 
+//--------------------------------------------------------------------------------
+void Configure_Timer1_For_PWM()
+{
+  TCCR1A = 0b11110001;                                                            // Fast PWM 62.5KHz (8 bit)
+  TCCR1B = 0b00001001;
+  OCR1A = 128;
+  OCR1B = 128;  
+}
 
+//--------------------------------------------------------------------------------
+float Circularly_Constrain(float Yaw_setpoint)
+{
+  while(Yaw_setpoint >= 360.0)                                                    // Keep Inverted_Yaw_setpoint within 0-360 limits
+      Yaw_setpoint -= 360.0;    
+  while(Yaw_setpoint < 0.0) 
+      Yaw_setpoint += 360.0;
 
-
-
-
-
-
+  return(Yaw_setpoint);
+}
 
 
 
