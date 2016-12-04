@@ -14,6 +14,7 @@
 #define   MOTOR_BEEP_AMPLITUDE        100                                         // 0 - 125 full range 
 #define   IR_UPDATE_PERIOD            40
 #define   PPM_UPDATE_PERIOD           40
+#define   PID_UPDATE_PERIOD           20000
 
 #define   DUTY_MAX                    255
 #define   DUTY_MIN                    0
@@ -88,6 +89,7 @@ void Sleep_6050(void);                                                          
 void Configure_IO_Pins();
 void Configure_Timer1_For_PWM();
 float Circularly_Constrain(float Yaw_setpoint);
+void Update_Yaw(void);
 
 //--- Variables ------------------------------------------------------------------
 

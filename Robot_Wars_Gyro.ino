@@ -5,17 +5,16 @@
  
 Normally we send Type A Packets:
   DataA: Yaw_setpoint & Speed data:  [YYYY_YYYY_SSSS_SSSS_T] - Y = Yaw, S = Speed, T = Packet Type 
-  DataB: PWM pulsewidth & info bits: [PPPP_PPPP_BBB_XXNRC_T] - P = Pulsewidth, B = PID Tuning, X = Not used, T = Packet Type
-                                                               N = Use Gyro control, R = Reset & Call bootloader, C = Change Channel
+  DataB: PWM pulsewidth & info bits: [PPPP_PPPP_BBB_XXXNC_T] - P = Pulsewidth, B = PID Tuning, X = Not used
+                                                               N = Use Gyro control, C = Change Channel, T = Packet Type
   
 We only send DataB if there has been a change to the PWM_Pulse_Width, or button bits etc. So quite Rarely!
 Things to know: Will the ESC work through a 4.7K resistor. Is it ok to loose signal completely or must it be at 1000us when not in use?
 
 To Do:
-  - SORT OUT IDLEING - (Don't have a timeout but rather hold 1-255 to represent Yaw_Setpoint and 0 to switch off???????)
+  - Why is upside down not being detected properly???  
+  - Fix the EEPROM Read and write nonsense. Why is it crashing if more than 1 PID value is being written to EEPROM???
   - Get 2 IR controlled robots working at the same time! Although this is coding for the transmitter
-  - Fix the EEPROM Read and write nonsense. Why is it crashing? Perform an EEPROM write on IR signal loss!!!!!
-  - Bug test like hell - why is it occasionally jittering try constraining the Run_Next_IR variables etc   
   - RF PID tuning - special sequence of stick positions when turning off Tx - Beep, Beep. Beep, Beep. Time that stick is l/r, u/d, f/b
 
 Analysis:
@@ -66,8 +65,9 @@ Description:
 #include "IR_Receive.h"
 
 //#define _READ_CHANNEL_FROM_EEPROM                                               // On start up, otherwise default to channel 1
+
 //#define _REVERSE_MOTOR_POLARITY                                                 // Reverse channels - BIG HERO 6 NEEDS THIS!
-#define _GMC_MOUNTED_UPSIDE_DOWN                                                  // Needed by my Destructacon
+#define _GMC_MOUNTED_UPSIDE_DOWN                                                  // Needed if the GMC is mounted with the Z-axis mounted downwards
 
 //############################# VARIABLES ########################################
 //--- IMU6050 Specific: ----------------------------------------------------------
@@ -93,10 +93,13 @@ float ypr[3];                                                                   
 volatile bool mpuInterrupt = false;                                               // indicates whether MPU interrupt pin has gone high
  
 //--- Globals: -------------------------------------------------------------------
-//--- PID Related:                                                                // THESE VALUES ARE READ FROM EEPROM IN THE SETUP ROUTINE. IF THEY HAVEN'T BEEN WRITTEN TO EEPROM YET, BURN THE DEFAULT VALUES IN
-float Kp;                                                                         // 1.0    Represents: An error of 90 degrees contributes 90 to the output
-float Ki;                                                                         // 1.0e-7 Represents: An error of 90 degrees contributes to 9 to the output per second
-float Kd;                                                                         // 1.0e5  Represents: Rotating at 90 degree/second contributes -9 to the output    
+struct PID_Param_Struct {                                                         // THESE VALUES ARE READ FROM EEPROM IN THE SETUP ROUTINE. IF THEY HAVEN'T BEEN WRITTEN TO EEPROM YET, BURN THE DEFAULT VALUES IN
+  float Kp;                                                                       // 1.0    Represents: An error of 90 degrees contributes 90 to the output
+  float Ki;                                                                       // 1.0e-7 Represents: An error of 90 degrees contributes to 9 to the output per second
+  float Kd;                                                                       // 1.0e5  Represents: Rotating at 90 degree/second contributes -9 to the output    
+};   
+
+PID_Param_Struct PID_Params;                                                                     
 
 float Yaw, Yaw_setpoint;                                                          // The measured Yaw and the desired Yaw provided by the user's stick movements (respectively)
 
@@ -133,8 +136,6 @@ void Access_EEPROM (char Read_Write);                                           
 char Upside_Down();                                                               // Returns 0 if we're upright, 1 otherwise
 void ISR_LR();                                                                    // Interrupt service routine
 
-
-
 //--------------------------------------------------------------------------------
 //################################################################################
 //--------------------------------------------------------------------------------
@@ -149,24 +150,24 @@ void setup()
   Access_EEPROM(EEPROM_READ);
 
   // If the PID values are ridiculous or haven't been written into EEPROM yet, we set them to defaults and burn them in
-  if(Kp <= 0.0 || Kp >= 5.0 || isnan(Kp))  {
-    Kp = 0.8f; Ki = 0.5e-7f; Kd = 0.5e5f;
-    Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);
+  if(PID_Params.Kp <= 0.0 || PID_Params.Kp >= 5.0 || isnan(PID_Params.Kp))  {
+    PID_Params.Kp = 0.8f; PID_Params.Ki = 0.5e-7f; PID_Params.Kd = 0.5e5f;
+    Access_EEPROM(EEPROM_WRITE);
   }
-  if(Ki >= 4.0e-6 || isnan(Ki))  {
-    Kp = 0.8f; Ki = 0.5e-7f; Kd = 0.5e5f;
-    Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);
+  if(PID_Params.Ki >= 4.0e-6 || isnan(PID_Params.Ki))  {
+    PID_Params.Kp = 0.8f; PID_Params.Ki = 0.5e-7f; PID_Params.Kd = 0.5e5f;
+    Access_EEPROM(EEPROM_WRITE);
   }
-  if(Kd >= 2.0e6 || isnan(Kd))  {
-    Kp = 0.8f; Ki = 0.5e-7f; Kd = 0.5e5f;
-    Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);Access_EEPROM(EEPROM_WRITE);
+  if(PID_Params.Kd >= 2.0e6 || isnan(PID_Params.Kd))  {
+    PID_Params.Kp = 0.8f; PID_Params.Ki = 0.5e-7f; PID_Params.Kd = 0.5e5f;
+    Access_EEPROM(EEPROM_WRITE);
   }
     
   // On startup send to the serial port the current PID parameters. There are 10K resistors so no damage will be done if an RF receiver is attached
   Serial.begin(115200); Serial.println(); 
-  Serial.print("Kp: "); Serial.println(float2s(Kp, 4));
-  Serial.print("Ki: "); Serial.println(float2s(Ki, 4));
-  Serial.print("Kd: "); Serial.println(float2s(Kd, 4));
+  Serial.print("Kp: "); Serial.println(float2s(PID_Params.Kp, 4));
+  Serial.print("Ki: "); Serial.println(float2s(PID_Params.Ki, 4));
+  Serial.print("Kd: "); Serial.println(float2s(PID_Params.Kd, 4));
     
   Serial.print("Channel in EEPROM: ");  
   Serial.println(Get_Channel_From_EEPROM(EEPROM_READ, 0));
@@ -196,78 +197,21 @@ void setup()
 //--------------------------------------------------------------------------------
 void loop() 
 {
-  // If DMP initialisation failed just run without gyro control
-  if (!dmpReady)  { 
-    Beep_Motors(4000, 50); Beep_Motors(3000, 50); Beep_Motors(4000, 50); 
-    Beep_Motors(3000, 50); Beep_Motors(4000, 50); Beep_Motors(3000, 50);
-                               
-    while(1)  {
-      if(!Low_Battery())  { 
-        if(Type_of_Reciever == RF_CTRL) {                                         // If an RF receiver is connected take signals from this as it has better performance than an IR controller
-          Process_PPM(); 
-                                                               
-          OCR1A = constrain(128 + (FwdBckPulseWdth_Safe/4) + (LfRghtPulseWdth_Safe/4), DUTY_MIN, DUTY_MAX);         
-          OCR1B = constrain(128 - (FwdBckPulseWdth_Safe/4) + (LfRghtPulseWdth_Safe/4), DUTY_MIN, DUTY_MAX);
-        }
-        else  {                                                                   // Otherwise an IR receiver is connected
-          Process_IR();                                                   
-                      
-          OCR1A = constrain(128 + FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX);         
-          OCR1B = constrain(128 - FwdBckPulseWdth_Safe + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX);             
-        } 
-      }
-    }
-  }          
-
-  // ----------- THIS IS THE MAIN LOOP WHERE WE SPEND MOST OF THE TIME -----------
   while (!mpuInterrupt && fifoCount < packetSize) {                               // wait for MPU interrupt or extra packet(s) available          
     if(!Low_Battery())  { 
       if(Type_of_Reciever == RF_CTRL) {                                           // If an RF receiver is connected take signals from this as it has better performance than an IR controller
-        Process_PPM();                                             
-        PID_Routine();            
+        Process_PPM();                                                        
       }
       else  {                                                                     // Otherwise we assume an IR receiver is connected. If it's not we shutdown the motors anyway
-        Process_IR();                                             
-        PID_Routine();  
+        Process_IR();                                           
       }
+
+      PID_Routine();
     }         
-  }             
-  
-  mpuInterrupt = false;                                                           // reset interrupt flag and get INT_STATUS byte
-  mpuIntStatus = mpu.getIntStatus();
-  
-  fifoCount = mpu.getFIFOCount();                                                 // get current FIFO count
-  
-  if ((mpuIntStatus & 0x10) || fifoCount == 1024) {                               // check for overflow (this should never happen unless our code is too inefficient)      
-    mpu.resetFIFO();                                                              // reset so we can continue cleanly      
-  }    
-  else if (mpuIntStatus & 0x02) {                                                 // otherwise, check for DMP data ready interrupt (this should happen frequently)        
-    while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();                // wait for correct available data length, should be a VERY short wait
-      mpu.getFIFOBytes(fifoBuffer, packetSize);                                   // read a packet from FIFO
-      
-      fifoCount -= packetSize;                                                    // track FIFO count here in case there is > 1 packet available (this lets us immediately read more without waiting for an interrupt)
-      
-      mpu.dmpGetQuaternion(&q, fifoBuffer);                                       // display Euler angles in degrees
-      mpu.dmpGetGravity(&gravity, &q);
-      mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);        
-      Yaw = (ypr[0] * 180.0/M_PI) + 180.0;                                        // Yaw given as a value between 0-360             
-  }
+  }  
 
-  static char Been_Here_Before = 0;
-  if(!Been_Here_Before) {                                                         // Get the gravity vector at start up. The robot must be switched on in its UPRIGHT or DOWNRIGHT position
-    mpu.dmpGetGravity(&Gravity_at_Startup, &q);
-    Been_Here_Before = 1;
-  } 
+  Update_Yaw();
 }
-
-
-
-
-
-
-
-
-
 
 //--------------------------------------------------------------------------------
 //################################################################################
@@ -283,18 +227,23 @@ void Process_PPM()
   static float Zero_Calibration = 0.0;
   static byte LfRghtPulse, FwdBckPulse, AuxPulse;
   static int Neutral_Input_Count_PWM = NEUTRAL_THRESHOLD_COUNT; 
-  static unsigned long Time_of_last_Update = millis();                            
+  static unsigned long Run_PPM_Update = millis() + PPM_UPDATE_PERIOD;                            
   static int No_PWM_Signal = NO_PWM_SIGNAL_THESHOLD;                              // Assume no signal at startup
 
   // 1)----******-----******-----******-----******-----******-----******-----*****
-  if(millis() - Time_of_last_Update <= PPM_UPDATE_PERIOD) { 
+  if(millis() - Run_PPM_Update <= PPM_UPDATE_PERIOD) { 
     if(No_PWM_Signal > NO_PWM_SIGNAL_THESHOLD || Neutral_Input_Count_PWM >= NEUTRAL_THRESHOLD_COUNT)  {
       DISABLE_MOTORS;
       Yaw_setpoint = Yaw;      
     }   
     return;        
   }  
-  Time_of_last_Update += PPM_UPDATE_PERIOD;                                              
+  
+  Run_PPM_Update += PPM_UPDATE_PERIOD;                                              
+
+  unsigned long Min_Time_Delay = millis() + PPM_UPDATE_PERIOD - 10;               // Constrain max and min times to next run this routine
+  unsigned long Max_Time_Delay = millis() + PPM_UPDATE_PERIOD + 10;
+  Run_PPM_Update = constrain(Run_PPM_Update, Min_Time_Delay, Max_Time_Delay); 
 
   // 2)----******-----******-----******-----******-----******-----******-----*****
   if((FwdBckPulseWdth >= 900) && (FwdBckPulseWdth <= 2100)) {                     // If we have a pulse within valid range
@@ -410,22 +359,25 @@ void Process_IR()
 //  1) It's run every IR_UPDATE_PERIOD ms
 //  2) It checks if any IR Data is being recieved and whether it's valid.       
 //  3) Turns LED on to indiciate circuit is receiving valid IR data from receiver.  
-//  4) If the joysticks go still for a while, idle.   
   
-  static int Neutral_Input_Count_IR = NEUTRAL_THRESHOLD_COUNT;
   static unsigned long Run_IR_Update = millis() + IR_UPDATE_PERIOD; 
   static int No_IR_Signal = NO_IR_SIGNAL_THESHOLD;                                // Assume no signal at start up
 
   // 1)----******-----******-----******-----******-----******-----******-----***** 
   if(millis() <= Run_IR_Update) { 
-    if(No_IR_Signal > NO_IR_SIGNAL_THESHOLD || Neutral_Input_Count_IR >= NEUTRAL_THRESHOLD_COUNT)  {
+    if(No_IR_Signal > NO_IR_SIGNAL_THESHOLD)  {
       DISABLE_MOTORS;                                                      
       Yaw_setpoint = Yaw;      
     }        
     return;         
-  } 
+  }
+    
   Run_IR_Update += IR_UPDATE_PERIOD;
 
+  unsigned long Min_Time_Delay = millis() + IR_UPDATE_PERIOD - 10;                // Constrain max and min times to next run this routine
+  unsigned long Max_Time_Delay = millis() + IR_UPDATE_PERIOD + 10;
+  Run_IR_Update = constrain(Run_IR_Update, Min_Time_Delay, Max_Time_Delay); 
+ 
   // 2)----******-----******-----******-----******-----******-----******-----*****    
   if(unsigned long IR_Data = IR_Rx.Check_Data())                                  // If data contains valid information clear the no signal count and process info
   {                                                               
@@ -447,22 +399,17 @@ void Process_IR()
     // If the packet identifier bit is 0 it's a Type B packet:
     else                
     {
-      // Type B packets contain: PWM pulsewidth & info bits: [PPPP_PPPP_BBB_XXNRCT] - P = Pulsewidth, B = PID Tuning, X = Not used, T = Packet Type
-      PWM_Pulse_Width = map(((IR_Data >> 9) & 0xFF), 0, 255, 1000, 2000);        // - N = Use Gyro control, R = Reset & Call bootloader, C = Change Channel
+      // Type B packets contain: PWM pulsewidth & info bits: [PPPP_PPPP_BBB_XXXNCT] - P = Pulsewidth, B = PID Tuning, X = Not used
+      PWM_Pulse_Width = map(((IR_Data >> 9) & 0xFF), 0, 255, 1000, 2000);        // - N = Use Gyro control, C = Change Channel, T = Packet Type
       
       if(unsigned char Button_Bits = ((IR_Data >> 6) & 0x7)) {
         Update_PID_Values(Button_Bits);
       } 
 
-      if((IR_Data >> 3) & 1)                                                     // Stops Gyro compensation and runs motors like a normal motor controller
+      if((IR_Data >> 2) & 1)                                                     // Stops Gyro compensation and runs motors like a normal motor controller
         Use_Gyro_Flag = 0;
       else
         Use_Gyro_Flag = 1;
-
-      if((IR_Data >> 2) & 1)  {                                                   // This calls the bootloader and is used if we want to upload code.
-        delay(2500);
-        boot_bootloader();                                                                              
-      }
       
       if((IR_Data >> 1) & 1)  {                                                   // This toggles the IR channel that we're using and stores the new value in EEPROM
         byte Channel_To_Switch_To = !Get_Channel_From_EEPROM(EEPROM_READ, 0);                  
@@ -476,32 +423,18 @@ void Process_IR()
   }
   
   // 3)----******-----******-----******-----******-----******-----******-----*****
-  if(No_IR_Signal > NO_IR_SIGNAL_THESHOLD)  {     
+  if(No_IR_Signal == NO_IR_SIGNAL_THESHOLD) {
+    DISABLE_MOTORS;
+    Access_EEPROM(EEPROM_WRITE);    
+  }  
+  else if(No_IR_Signal > NO_IR_SIGNAL_THESHOLD)  {     
     LED_OFF;                                                                      // Turn LED off if no signal is being received
     DISABLE_MOTORS;                                                               // Disable outputs  
     PWM_Pulse_Width = 1000;                                                       // Power down ESC.
 
     OCR1A = 128; OCR1B = 128;    
     return;
-  }
-
-  // 4)----******-----******-----******-----******-----******-----******-----*****
-//  if(abs(LfRghtPulseWdth_Safe) <= 10 && abs(FwdBckPulseWdth_Safe) <= 10) {        // If control sticks are in their neurtal position...
-//    Neutral_Input_Count_IR++;
-//    
-//    if(Neutral_Input_Count_IR >= NEUTRAL_THRESHOLD_COUNT) {
-//      Yaw_setpoint = Yaw;
-//      DISABLE_MOTORS;
-//      
-//      if(Neutral_Input_Count_IR % 15 == 0) {                                      // Slow flash LED to indicate the PID algorithm is suspended due to inactivity
-//        digitalWrite(LED, !digitalRead(LED));      
-//      }                  
-//      return;      
-//    }   
-//  }
-//  else  {
-//    Neutral_Input_Count_IR = 0; 
-//  }  
+  } 
 
   ENABLE_MOTORS;                                                                  
   LED_ON;                                                                         // Turn LED on to indicate signal being received ok and Enable the motors  
@@ -519,7 +452,7 @@ void PID_Routine()
 // is -ve we've been flipped. In this case we need to make just a few alterations to the inputs...
 
   static unsigned long Time_at_Motor_Update = micros();
-  static unsigned long Run_Next_PID = micros() + 20000;                           
+  static unsigned long Run_Next_PID = micros() + PID_UPDATE_PERIOD;                           
   static unsigned long Time_at_PWM_Start;
   
   int FwdBckPulseWdth_Safe_Temp = FwdBckPulseWdth_Safe;
@@ -551,8 +484,13 @@ void PID_Routine()
     }
   }
   //------------------------------------------------------------------------------
-  Run_Next_PID += 20000;                                                             
+  Run_Next_PID += PID_UPDATE_PERIOD;
 
+  unsigned long Min_Time_Delay = millis() + PID_UPDATE_PERIOD - 5000;             // Constrain max and min times to next run this routine
+  unsigned long Max_Time_Delay = millis() + PID_UPDATE_PERIOD + 5000;
+  Run_Next_PID = constrain(Run_Next_PID, Min_Time_Delay, Max_Time_Delay);
+                                                                
+  //------------------------------------------------------------------------------
   if(MOTORS_ENABLED) {
     if(Use_Gyro_Flag)  
     {
@@ -561,8 +499,8 @@ void PID_Routine()
       
       float Error, Output, dInput;
       static float ErrorSum, LastYaw;
-    
-      if(Upside_Down()) 
+
+      if(1) //Upside_Down()) ############################################################################################################
       {
         float Inverted_Yaw_setpoint = 180.0 - Yaw_setpoint;
         Inverted_Yaw_setpoint = Circularly_Constrain(Inverted_Yaw_setpoint);      // Keep Inverted_Yaw_setpoint within 0-360 limits        
@@ -577,14 +515,14 @@ void PID_Routine()
         dInput = (Yaw - LastYaw) / delta_t;
       }  
       
-      ErrorSum += (Error * Ki) * delta_t;                                                                                               
+      ErrorSum += (Error * PID_Params.Ki) * delta_t;                                                                                               
       ErrorSum = constrain(ErrorSum, -100.0, 100.0);      
       LastYaw = Yaw;
   
       #ifdef _GMC_MOUNTED_UPSIDE_DOWN
-        Output = (Error * Kp) + ErrorSum + (dInput * Kd);
+        Output = (Error * PID_Params.Kp) + ErrorSum + (dInput * PID_Params.Kd);
       #else
-        Output = (Error * Kp) + ErrorSum - (dInput * Kd);
+        Output = (Error * PID_Params.Kp) + ErrorSum - (dInput * PID_Params.Kd);
       #endif
       
       LfRghtPulseWdth_Safe = round(Output);
@@ -648,35 +586,35 @@ void Update_PID_Values(char Button_Info)
 {
   if(Button_Info & 0b100)  {                                                      // If Z_Button pressed on GC controller
     if((Button_Info & 0b11) == 0b11)  {                                           // B button
-      Kp -= 0.004;
-      Kp = max(Kp, 0.0);                                                          // Constrain the min value to 0
-      if(Kp > 0.0)                                                                // Don't flash light if we've reached zero
+      PID_Params.Kp -= 0.004;
+      PID_Params.Kp = max(PID_Params.Kp, 0.0);                                    // Constrain the min value to 0
+      if(PID_Params.Kp > 0.0)                                                     // Don't flash light if we've reached zero
         digitalWrite(LED, !digitalRead(LED));
     }
     if((Button_Info & 0b11) == 0b01)  {                                           // Y button
-      Ki -= 1.6e-9;
-      Ki = max(Ki, 0.0);
-      if(Ki > 0.0)
+      PID_Params.Ki -= 1.6e-9;
+      PID_Params.Ki = max(PID_Params.Ki, 0.0);
+      if(PID_Params.Ki > 0.0)
         digitalWrite(LED, !digitalRead(LED));
     }
     if((Button_Info & 0b11) == 0b10)  {                                           // X button 
-      Kd -= 2.0e2;
-      Kd = max(Kd, 0.0);
-      if(Kd > 0.0)
+      PID_Params.Kd -= 2.0e2;
+      PID_Params.Kd = max(PID_Params.Kd, 0.0);
+      if(PID_Params.Kd > 0.0)
         digitalWrite(LED, !digitalRead(LED));
     }    
   }
   else  {
     if((Button_Info & 0b11) == 0b11)  {                                           // B button
-      Kp += 0.004;
+      PID_Params.Kp += 0.004;
       digitalWrite(LED, !digitalRead(LED));
     }
     if((Button_Info & 0b11) == 0b01)  {                                           // Y button
-      Ki += 1.6e-9;
+      PID_Params.Ki += 1.6e-9;
       digitalWrite(LED, !digitalRead(LED));
     }
     if((Button_Info & 0b11) == 0b10)  {                                           // X button 
-      Kd += 2.0e2;
+      PID_Params.Kd += 2.0e2;
       digitalWrite(LED, !digitalRead(LED));
     } 
   }
@@ -687,36 +625,11 @@ void Update_PID_Values(char Button_Info)
 //--------------------------------------------------------------------------------
 void Access_EEPROM (char Read_Write)
 {
-// Bug: When writing new PID values to EEPROM, turning the signal off casues a write. The GMC doesn't seem to wake up again...
-//      This only happens when 2 or 3 of the parameters have been altered. Something to do with how long eeprom writes take.
-//      By Writing one value per call, we get around this problem. Maybe we need a little delay between writes. need to investigate.
-
-// If Read_Write = 1 this routine writes the current PID parameters to EEPROM otherwise it reads them
-  static char i = 0;  
-
-  if(Read_Write)
-  {
-    delay(1);
-    switch(i) {
-      case 0:
-        EEPROM.put(0, Kp);
-        i = 1;
-        return;
-      case 1:
-        EEPROM.put(4, Ki);
-        i = 2;
-        return;
-      default:
-        EEPROM.put(8, Kd);
-        i = 0;
-        return;
-    }
+  if(Read_Write)  {                                                               // If Read_Write = 1 this routine writes the current PID parameters to EEPROM otherwise it reads them
+    EEPROM.put(12, PID_Params);
   }
-  else
-  {
-    EEPROM.get(0, Kp);
-    EEPROM.get(4, Ki);
-    EEPROM.get(8, Kd);    
+  else  {
+    EEPROM.get(12, PID_Params);   
   }
 }
 
@@ -749,11 +662,61 @@ void setup_6050() {
         dmpReady = true;                                                          // set our DMP Ready flag so the main loop() function knows it's okay to use it
        
         packetSize = mpu.dmpGetFIFOPacketSize();                                  // get expected DMP packet size for later comparison
-    } 
+    }
+
+    if (!dmpReady)  { 
+      Beep_Motors(4000, 50); Beep_Motors(3000, 50); Beep_Motors(4000, 50);        // Beep to indicate Gyro isn't working
+      Beep_Motors(3000, 50); Beep_Motors(4000, 50); Beep_Motors(3000, 50);
+      Use_Gyro_Flag = 0;                                                          // Ensure we don't try to use the gyro since it isn't working
+    }       
 }
 
-void Sleep_6050() {
+//--------------------------------------------------------------------------------
+//################################################################################
+//--------------------------------------------------------------------------------
+void Sleep_6050() 
+{
   mpu.setSleepEnabled(1);
+}
+
+//--------------------------------------------------------------------------------
+//################################################################################
+//--------------------------------------------------------------------------------
+void Update_Yaw()
+{
+  mpuInterrupt = false;                                                           // reset interrupt flag and get INT_STATUS byte
+  mpuIntStatus = mpu.getIntStatus();
+  
+  fifoCount = mpu.getFIFOCount();                                                 // get current FIFO count
+  
+  if ((mpuIntStatus & 0x10) || fifoCount == 1024) {                               // check for overflow (this should never happen unless our code is too inefficient)      
+    mpu.resetFIFO();                                                              // reset so we can continue cleanly      
+  }    
+  else if (mpuIntStatus & 0x02) {                                                 // otherwise, check for DMP data ready interrupt (this should happen frequently)        
+    while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();                // wait for correct available data length, should be a VERY short wait
+      mpu.getFIFOBytes(fifoBuffer, packetSize);                                   // read a packet from FIFO
+      
+      fifoCount -= packetSize;                                                    // track FIFO count here in case there is > 1 packet available (this lets us immediately read more without waiting for an interrupt)
+      
+      mpu.dmpGetQuaternion(&q, fifoBuffer);                                       // display Euler angles in degrees
+      mpu.dmpGetGravity(&gravity, &q);
+      mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);        
+      Yaw = (ypr[0] * 180.0/M_PI) + 180.0;                                        // Yaw given as a value between 0-360                                           
+  }
+
+  // This grabs the gravity vector at startup so that we can later see if the robot has been flipped or not. 
+  static char Gravity_Aquired = 0;
+  static char Get_Gravity_Countdown = 50;                                         // Get gravity vector after the 50th iteration to this routine
+  
+  if(!Gravity_Aquired) {                                                          // Get the gravity vector at start up. The robot must be switched on in its UPRIGHT or DOWNRIGHT position
+    if(Get_Gravity_Countdown) {
+      Get_Gravity_Countdown--;
+    }
+    else  {
+      mpu.dmpGetGravity(&Gravity_at_Startup, &q);
+      Gravity_Aquired = 1;            
+    }
+  }
 }
 
 //--------------------------------------------------------------------------------
@@ -813,9 +776,6 @@ void IR_OR_PWM()                                                                
 
   Beep_Motors(3000, 100);  
 }
-
-
-
 
 
 
