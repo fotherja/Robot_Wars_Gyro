@@ -20,7 +20,7 @@
 #define   DUTY_MIN                    0
 
 //--- Low_Battery() related constants:
-#define   VOLTAGE_SENSE_CONSTANT      10                                          // 24.71 - This is the value for the Green LED GMC that I built 1st otherwise 10.08 - ROUND TO NEAREST INT
+#define   VOLTAGE_SENSE_CONSTANT      10                                          // 24.71 - is the value for the Green LED GMC that I built 1st otherwise 10.08 - ROUND TO NEAREST INT
 #define   BATTERY_THRESHOLD_LOW_2S    6300                                        // If voltage falls below this, enter sleep
 #define   BATTERY_THRESHOLD_HGH_2S    7000                                        // If voltage rises above this, turn active again
 #define   BATTERY_THRESHOLD_LOW_1S    3150                                        // If voltage falls below this, enter sleep
@@ -90,6 +90,7 @@ void Configure_IO_Pins();
 void Configure_Timer1_For_PWM();
 float Circularly_Constrain(float Yaw_setpoint);
 void Update_Yaw(void);
+void PID_Tuning(int No_PWM_Signal);
 
 //--- Variables ------------------------------------------------------------------
 

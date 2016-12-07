@@ -5,8 +5,8 @@
  
 Normally we send Type A Packets:
   DataA: Yaw_setpoint & Speed data:  [YYYY_YYYY_SSSS_SSSS_T] - Y = Yaw, S = Speed, T = Packet Type 
-  DataB: PWM pulsewidth & info bits: [PPPP_PPPP_BBB_XXXNC_T] - P = Pulsewidth, B = PID Tuning, X = Not used
-                                                               N = Use Gyro control, C = Change Channel, T = Packet Type
+  DataB: PWM pulsewidth & info bits: [PPPP_PPPP_BBB_XXONC_T] - P = Pulsewidth, B = PID Tuning, X = Not used
+                                                               O = Orientation, N = Use Gyro control, C = Change Channel, T = Packet Type
   
 We only send DataB if there has been a change to the PWM_Pulse_Width, or button bits etc. So quite Rarely!
 Things to know: Will the ESC work through a 4.7K resistor. Is it ok to loose signal completely or must it be at 1000us when not in use?
@@ -14,8 +14,7 @@ Things to know: Will the ESC work through a 4.7K resistor. Is it ok to loose sig
 To Do:
   - Why is upside down not being detected properly???  
   - Fix the EEPROM Read and write nonsense. Why is it crashing if more than 1 PID value is being written to EEPROM???
-  - Get 2 IR controlled robots working at the same time! Although this is coding for the transmitter
-  - RF PID tuning - special sequence of stick positions when turning off Tx - Beep, Beep. Beep, Beep. Time that stick is l/r, u/d, f/b
+      # COULD TRY WRITING TO EEPROM AFTER EVERY PID VALUE UPDATE... 
 
 Analysis:
   - Current draw in sleep is incredibly low, I can't measure it! Current draw with 4 wheels at full speed in the air ~400mA
@@ -67,7 +66,7 @@ Description:
 //#define _READ_CHANNEL_FROM_EEPROM                                               // On start up, otherwise default to channel 1
 
 //#define _REVERSE_MOTOR_POLARITY                                                 // Reverse channels - BIG HERO 6 NEEDS THIS!
-#define _GMC_MOUNTED_UPSIDE_DOWN                                                  // Needed if the GMC is mounted with the Z-axis mounted downwards
+//#define _GMC_MOUNTED_UPSIDE_DOWN                                                  // Needed if the GMC is mounted with the Z-axis mounted downwards
 
 //############################# VARIABLES ########################################
 //--- IMU6050 Specific: ----------------------------------------------------------
@@ -105,6 +104,7 @@ float Yaw, Yaw_setpoint;                                                        
 
 char Type_of_Reciever = 0;                                                        // Gets set by calling the IR_OR_PWM() function at start up. 0 for IR, 1 for 2 channel RF, 2 for 3 channel RF.
 byte Use_Gyro_Flag = 1;                                                           // If this is set to zero, we stop using gyro compensation and act as a normal motor controller
+byte Upside_Down_Flag = 0;
 
 int PWM_Pulse_Width = 0;                                                          // If this is set at any point to be between 800-2000, the GMC starts outputing PWM pulses every 20ms of this length
 
@@ -199,13 +199,11 @@ void loop()
 {
   while (!mpuInterrupt && fifoCount < packetSize) {                               // wait for MPU interrupt or extra packet(s) available          
     if(!Low_Battery())  { 
-      if(Type_of_Reciever == RF_CTRL) {                                           // If an RF receiver is connected take signals from this as it has better performance than an IR controller
-        Process_PPM();                                                        
-      }
-      else  {                                                                     // Otherwise we assume an IR receiver is connected. If it's not we shutdown the motors anyway
+      if(Type_of_Reciever == RF_CTRL)                                             // If an RF receiver is connected take signals from this as it has better performance than an IR controller
+        Process_PPM(); 
+      else                                                                        // Otherwise we assume an IR receiver is connected. If it's not we shutdown the motors anyway
         Process_IR();                                           
-      }
-
+      
       PID_Routine();
     }         
   }  
@@ -231,13 +229,8 @@ void Process_PPM()
   static int No_PWM_Signal = NO_PWM_SIGNAL_THESHOLD;                              // Assume no signal at startup
 
   // 1)----******-----******-----******-----******-----******-----******-----*****
-  if(millis() - Run_PPM_Update <= PPM_UPDATE_PERIOD) { 
-    if(No_PWM_Signal > NO_PWM_SIGNAL_THESHOLD || Neutral_Input_Count_PWM >= NEUTRAL_THRESHOLD_COUNT)  {
-      DISABLE_MOTORS;
-      Yaw_setpoint = Yaw;      
-    }   
-    return;        
-  }  
+  if(millis() <= Run_PPM_Update)
+    return;         
   
   Run_PPM_Update += PPM_UPDATE_PERIOD;                                              
 
@@ -283,6 +276,7 @@ void Process_PPM()
 // 3) If only 2 channels connected and AuxPWMIn is left to float high then resort to rate control - ie. throttle and left/right but with gyro compensation
 
   if(FwdBckPulse && LfRghtPulse)  {                                               // If we've just received 2 valid pulses, clear the No_Signal count    
+    //PID_Tuning(No_PWM_Signal);                                                    // PID Tuning if Tx turned on with sticks in bottom right position.
     No_PWM_Signal = 0;
 
     if(AuxPulse)                                                                  // If we're receiving PPM on Aux_In: Joystick Control with separate throttle...
@@ -293,24 +287,20 @@ void Process_PPM()
         Yaw_setpoint = Calculate_Joy_Stick_Angle(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe) + Zero_Calibration;
       }    
       
-      FwdBckPulseWdth_Safe = AuxPulseWdth_Safe / 4;     
+      FwdBckPulseWdth_Safe = AuxPulseWdth_Safe / 4;
+      Use_Gyro_Flag = 1;     
     }
-    else if(!AUXIN_STATE)                                                         // If AuxPWMIn is pulled low use Joystick Control with throttle proportional to deviation of stick - feels weird!
-    {
-      float Joystick_Sq_Mag = Calculate_Joy_Stick_Magnitude(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe); 
-      if(Joystick_Sq_Mag > 20000.0) 
-      {
-        Yaw_setpoint = Calculate_Joy_Stick_Angle(FwdBckPulseWdth_Safe, LfRghtPulseWdth_Safe) + Zero_Calibration;
-      }
-    
-      Joystick_Sq_Mag /= 3900.0;
-      FwdBckPulseWdth_Safe = (int)Joystick_Sq_Mag;  
-      FwdBckPulseWdth_Safe = constrain(FwdBckPulseWdth_Safe, -128, 128);
+    else if(!AUXIN_STATE)                                                         // If AuxPWMIn is pulled low, don't use gyro control
+    {         
+      FwdBckPulseWdth_Safe /= 4;  
+      LfRghtPulseWdth_Safe /= 6;
+      Use_Gyro_Flag = 0;
     }
     else                                                                          // If AuxPWMIn is disconnected and therefore pulled high default to rate control...
     {
-      Yaw_setpoint += (((float)LfRghtPulseWdth_Safe) * 0.01);                     // Scaling so full stick (+500us) gives 500 degrees per second rate of turn
-      FwdBckPulseWdth_Safe /= 4;      
+      Yaw_setpoint += (((float)LfRghtPulseWdth_Safe) * 0.05);                     // Scaling so full stick (+500us) gives 500 degrees per second rate of turn
+      FwdBckPulseWdth_Safe /= 4;   
+      Use_Gyro_Flag = 1;   
     }
   }      
       
@@ -321,14 +311,14 @@ void Process_PPM()
   if(No_PWM_Signal > NO_PWM_SIGNAL_THESHOLD)  {     
     LED_OFF;                                                                      // Turn LED off if no signal is being received
     DISABLE_MOTORS;                                                               // Disable outputs  
-    Zero_Calibration = Yaw;                                                       // Turning off the signal sets the Zero_Calibration variable
+    Zero_Calibration = Yaw_Setpoint;                                              // Turning off the signal sets the Zero_Calibration variable
            
     OCR1A = 128; OCR1B = 128;                                                 
     return;
   }   
 
-  // 4) -----
-  if(abs(LfRghtPulseWdth_Safe) <= 40 && abs(FwdBckPulseWdth_Safe) <= 40) {        // If control sticks are in their neurtal position...
+  // 4) -----                                                                     // If control sticks are in their neurtal position...
+  if(abs(LfRghtPulseWdth_Safe) <= 20 && abs(FwdBckPulseWdth_Safe) <= 10 && Use_Gyro_Flag) {        
     Neutral_Input_Count_PWM++;
     
     if(Neutral_Input_Count_PWM >= NEUTRAL_THRESHOLD_COUNT) {
@@ -341,7 +331,7 @@ void Process_PPM()
       return;                                                                     // Return with a zero to disable motor activity
     }   
   }
-  else  {
+  else  {    
     Neutral_Input_Count_PWM = 0; 
   }
 
@@ -362,15 +352,11 @@ void Process_IR()
   
   static unsigned long Run_IR_Update = millis() + IR_UPDATE_PERIOD; 
   static int No_IR_Signal = NO_IR_SIGNAL_THESHOLD;                                // Assume no signal at start up
+  static int Idle_Flag = 0;
 
   // 1)----******-----******-----******-----******-----******-----******-----***** 
-  if(millis() <= Run_IR_Update) { 
-    if(No_IR_Signal > NO_IR_SIGNAL_THESHOLD)  {
-      DISABLE_MOTORS;                                                      
-      Yaw_setpoint = Yaw;      
-    }        
+  if(millis() <= Run_IR_Update)       
     return;         
-  }
     
   Run_IR_Update += IR_UPDATE_PERIOD;
 
@@ -387,9 +373,15 @@ void Process_IR()
     if(IR_Data & 1)     
     {
       // Type A packets contain: Yaw_setpoint & Speed data: [YYYY_YYYY__SSSS_SSSS_T] - Y = Yaw, S = Speed, T = Packet Type    
-      FwdBckPulseWdth_Safe = (int)((IR_Data >> 1) & 0xFF) - 128;      
-      if(Use_Gyro_Flag) {        
+      FwdBckPulseWdth_Safe = (int)((IR_Data >> 1) & 0xFF) - 128;
+            
+      if(Use_Gyro_Flag) {                
         Yaw_setpoint = (float)map(((IR_Data >> 9) & 0xFF), 0, 255, 0, 359);
+        
+        if(Yaw_setpoint == 0)
+          Idle_Flag = 1;
+        else
+          Idle_Flag = 0;
       }
       else  {
         LfRghtPulseWdth_Safe = (int)((IR_Data >> 9) & 0xFF) - 128; 
@@ -399,12 +391,17 @@ void Process_IR()
     // If the packet identifier bit is 0 it's a Type B packet:
     else                
     {
-      // Type B packets contain: PWM pulsewidth & info bits: [PPPP_PPPP_BBB_XXXNCT] - P = Pulsewidth, B = PID Tuning, X = Not used
-      PWM_Pulse_Width = map(((IR_Data >> 9) & 0xFF), 0, 255, 1000, 2000);        // - N = Use Gyro control, C = Change Channel, T = Packet Type
+      // Type B packets contain: PWM pulsewidth & info bits: [PPPP_PPPP_BBB_XXONCT] - P = Pulsewidth, B = PID Tuning, X = Not used
+      PWM_Pulse_Width = map(((IR_Data >> 9) & 0xFF), 0, 255, 1000, 2000);        // - O = Orientation, N = Use Gyro control, C = Change Channel, T = Packet Type
       
       if(unsigned char Button_Bits = ((IR_Data >> 6) & 0x7)) {
         Update_PID_Values(Button_Bits);
       } 
+
+      if((IR_Data >> 3) & 1)                                                     // Since I can't get the IMU to detect if we're flipped or not, we have to send a signal
+        Upside_Down_Flag = 0;
+      else
+        Upside_Down_Flag = 1;
 
       if((IR_Data >> 2) & 1)                                                     // Stops Gyro compensation and runs motors like a normal motor controller
         Use_Gyro_Flag = 0;
@@ -434,7 +431,14 @@ void Process_IR()
 
     OCR1A = 128; OCR1B = 128;    
     return;
-  } 
+  }
+
+  if(Idle_Flag) {                                                                 // If we're being told to idle by the Tx, disable motors and slow flash LED
+    DISABLE_MOTORS;    
+    static byte Idle_Count = 0; Idle_Count++;
+    if(Idle_Count % 15 == 0) { digitalWrite(LED, !digitalRead(LED)); }            // Slow flash LED to indicate we're idling  
+    return;
+  }    
 
   ENABLE_MOTORS;                                                                  
   LED_ON;                                                                         // Turn LED on to indicate signal being received ok and Enable the motors  
@@ -456,6 +460,7 @@ void PID_Routine()
   static unsigned long Time_at_PWM_Start;
   
   int FwdBckPulseWdth_Safe_Temp = FwdBckPulseWdth_Safe;
+  int LfRghtPulseWdth_Safe_Temp = LfRghtPulseWdth_Safe;
   unsigned long delta_t;
     
   if(micros() < Run_Next_PID)                                                     // Run this routine every 20ms
@@ -500,7 +505,7 @@ void PID_Routine()
       float Error, Output, dInput;
       static float ErrorSum, LastYaw;
 
-      if(1) //Upside_Down()) ############################################################################################################
+      if(Upside_Down()) 
       {
         float Inverted_Yaw_setpoint = 180.0 - Yaw_setpoint;
         Inverted_Yaw_setpoint = Circularly_Constrain(Inverted_Yaw_setpoint);      // Keep Inverted_Yaw_setpoint within 0-360 limits        
@@ -525,13 +530,11 @@ void PID_Routine()
         Output = (Error * PID_Params.Kp) + ErrorSum - (dInput * PID_Params.Kd);
       #endif
       
-      LfRghtPulseWdth_Safe = round(Output);
-      LfRghtPulseWdth_Safe = constrain(LfRghtPulseWdth_Safe, -100, 100);
+      LfRghtPulseWdth_Safe_Temp = round(Output);
+      LfRghtPulseWdth_Safe_Temp = constrain(LfRghtPulseWdth_Safe_Temp, -100, 100);
     }    
     else
-    {
-      int LfRghtPulseWdth_Safe_Temp = LfRghtPulseWdth_Safe;
-      
+    { 
       if(Upside_Down()) {             
         FwdBckPulseWdth_Safe_Temp = -FwdBckPulseWdth_Safe_Temp;
         LfRghtPulseWdth_Safe_Temp = -LfRghtPulseWdth_Safe_Temp;  
@@ -539,14 +542,14 @@ void PID_Routine()
     }
       
     #if defined(_REVERSE_MOTOR_POLARITY)
-      OCR1A = Filter1.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX));
-      OCR1B = Filter2.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp - LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX));
+      OCR1A = Filter1.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe_Temp, DUTY_MIN, DUTY_MAX));
+      OCR1B = Filter2.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp - LfRghtPulseWdth_Safe_Temp, DUTY_MIN, DUTY_MAX));
     #elif defined(_GMC_MOUNTED_UPSIDE_DOWN)
-      OCR1A = Filter1.Rolling_Average(constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX));
-      OCR1B = Filter2.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX));    
+      OCR1A = Filter1.Rolling_Average(constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe_Temp, DUTY_MIN, DUTY_MAX));
+      OCR1B = Filter2.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe_Temp, DUTY_MIN, DUTY_MAX));    
     #else
-      OCR1A = Filter1.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX));
-      OCR1B = Filter2.Rolling_Average(constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe, DUTY_MIN, DUTY_MAX));
+      OCR1A = Filter1.Rolling_Average(constrain(128 + FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe_Temp, DUTY_MIN, DUTY_MAX));
+      OCR1B = Filter2.Rolling_Average(constrain(128 - FwdBckPulseWdth_Safe_Temp + LfRghtPulseWdth_Safe_Temp, DUTY_MIN, DUTY_MAX));
     #endif
   }
 
@@ -561,8 +564,9 @@ void PID_Routine()
 //################################################################################
 //--------------------------------------------------------------------------------
 char Upside_Down()                                                                // Return 0 if we're upright, 1 if we're upside down
-{                                                                                 // The dot product goes negative when the current gravity vector is >90 degrees from the startup gravity 
-  
+{ 
+  //return(Upside_Down_Flag); //########################## Temp Fix ##############################
+                                                                                   
   if(((Gravity_at_Startup.x * gravity.x) + (Gravity_at_Startup.y * gravity.y) + (Gravity_at_Startup.z * gravity.z)) > 0)  {
     #ifdef _GMC_MOUNTED_UPSIDE_DOWN
       return(1);
@@ -706,14 +710,14 @@ void Update_Yaw()
 
   // This grabs the gravity vector at startup so that we can later see if the robot has been flipped or not. 
   static char Gravity_Aquired = 0;
-  static char Get_Gravity_Countdown = 50;                                         // Get gravity vector after the 50th iteration to this routine
+  static char Get_Gravity_Countdown = 25;                                         // Get gravity vector after the 25th iteration to this routine
   
-  if(!Gravity_Aquired) {                                                          // Get the gravity vector at start up. The robot must be switched on in its UPRIGHT or DOWNRIGHT position
+  if(!Gravity_Aquired) {                                                          // Get the gravity vector at start up. The robot must be switched on in its UPRIGHT position
     if(Get_Gravity_Countdown) {
       Get_Gravity_Countdown--;
     }
     else  {
-      mpu.dmpGetGravity(&Gravity_at_Startup, &q);
+      Gravity_at_Startup = gravity;
       Gravity_Aquired = 1;            
     }
   }
@@ -770,13 +774,57 @@ void IR_OR_PWM()                                                                
   }
   else                                                                            // Beep once if RF ctrl has been detected
   {
-    pinMode(IR_Pos, INPUT);                          
-    pinMode(IR_GND, INPUT);  
+    pinMode(IR_Pos, INPUT);
   }
 
   Beep_Motors(3000, 100);  
 }
 
+//--------------------------------------------------------------------------------
+//################################################################################
+//--------------------------------------------------------------------------------
+void PID_Tuning(int No_PWM_Signal)
+{
+  if(No_PWM_Signal < NO_PWM_SIGNAL_THESHOLD)                                      // If Tx hasn't just been turned on, return immediately
+    return;
+
+  delay(50);                                                                      // ?need? - When Tx turns on, does it need time to output sensible PWM pulses?
+  if(FwdBckPulseWdth_Safe < 300 && LfRghtPulseWdth_Safe < 300)                    // If stick isn't in top right postion then don't enter tuning routine
+    return;
+
+  Beep_Motors(4000, 50); Beep_Motors(3000, 50);                                   // Beep to indicate we're in the tuning routine 
+
+  unsigned long Last_Stick_Movement = millis();
+  while(millis() - Last_Stick_Movement < 2000)                                    // If stick stays in center for >2seconds, exit this routine
+  {
+    if(FwdBckPulseWdth_Safe > 300 && LfRghtPulseWdth_Safe > 300)  {               // Increase P if stick in top right
+      Update_PID_Values(0b011);
+      Last_Stick_Movement = millis();
+    }  
+    else if(FwdBckPulseWdth_Safe > 300 && LfRghtPulseWdth_Safe < -300)  {         // Decrease P if stick in top left
+      Update_PID_Values(0b111);
+      Last_Stick_Movement = millis(); 
+    }          
+    else if(LfRghtPulseWdth_Safe > 300) {                                         // Increase I if stick in middle right
+      Update_PID_Values(0b001);
+      Last_Stick_Movement = millis();
+    }      
+    else if(LfRghtPulseWdth_Safe < -300)  {                                       // Decrease I if stick in middle left
+      Update_PID_Values(0b101);
+      Last_Stick_Movement = millis(); 
+    }         
+    else if(FwdBckPulseWdth_Safe < -300 && LfRghtPulseWdth_Safe > 300)  {         // Increase D if stick in bottom right
+      Update_PID_Values(0b010);
+      Last_Stick_Movement = millis(); 
+    }         
+    else if(FwdBckPulseWdth_Safe < -300 && LfRghtPulseWdth_Safe < -300) {         // Decrease I if stick in bottom left
+      Update_PID_Values(0b110);
+      Last_Stick_Movement = millis();
+    } 
+
+    delay(40);
+  }  
+}
 
 
 
