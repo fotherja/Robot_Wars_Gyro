@@ -7,19 +7,20 @@
 #define   ROLLING_AVG_FILTER_LENGTH   2                                           // Rolling average filter length. Smooths acceleration of motors.
 #define   BATTERY_AVG_FILTER_LENGTH   5                                           // Smooths the ADC readings of the battery voltage to avoid spurious drops from causing shutdown     
 
-#define   NO_SIGNAL_THESHOLD_PWM      10                                          // Number of erronous PPM signals received before we deduce no signal is being received
-#define   NO_SIGNAL_THESHOLD_IR       10                                          // Number of erronous PPM signals received before we deduce no signal is being received
+#define   NO_PWM_SIGNAL_THESHOLD      10                                          // Number of erronous PPM signals received before we deduce no signal is being received
+#define   NO_IR_SIGNAL_THESHOLD       10                                          // Number of erronous PPM signals received before we deduce no signal is being received
 #define   NEUTRAL_THRESHOLD_COUNT     20
 
 #define   MOTOR_BEEP_AMPLITUDE        100                                         // 0 - 125 full range 
 #define   IR_UPDATE_PERIOD            40
 #define   PPM_UPDATE_PERIOD           40
+#define   PID_UPDATE_PERIOD           20000
 
 #define   DUTY_MAX                    255
 #define   DUTY_MIN                    0
 
 //--- Low_Battery() related constants:
-#define   VOLTAGE_SENSE_CONSTANT      10                                          // 24.71 - This is the value for the Green LED GMC that I built 1st otherwise 10.08 - ROUND TO NEAREST INT
+#define   VOLTAGE_SENSE_CONSTANT      10                                          // 24.71 - is the value for the Green LED GMC that I built 1st otherwise 10.08 - ROUND TO NEAREST INT
 #define   BATTERY_THRESHOLD_LOW_2S    6300                                        // If voltage falls below this, enter sleep
 #define   BATTERY_THRESHOLD_HGH_2S    7000                                        // If voltage rises above this, turn active again
 #define   BATTERY_THRESHOLD_LOW_1S    3150                                        // If voltage falls below this, enter sleep
@@ -32,9 +33,7 @@
 #define   EEPROM_WRITE                1
 
 #define   IR_CTRL                     0
-#define   RF_2CH_CTRL                 1
-#define   RF_3CH_CTRL                 2
-#define   RF_PPM                      3
+#define   RF_CTRL                     1
 
 #define   IR_PACKET_SEARCH_ENABLED    PCMSK0
 #define   ENABLE_IR_PACKET_SEARCH     0b00001000
@@ -70,9 +69,9 @@
 #define   MotorL                      9                                           // Left Motors
 #define   MotorR                      10                                          // Right Motors
 
-#define   IR_Pos                      13                                          // Convienient use of pins to supply power to IR reciever.
-#define   IR_GND                      12
-#define   IR_In                       11                                          // PB3 which is PCINT3
+#define   IR_Pos                      13      // SCK                              // Convienient use of pins to supply power to IR reciever.
+#define   IR_GND                      12      // MISO
+#define   IR_In                       11      // MOSI                             // PB3 which is PCINT3
 
 #define   LED                         0                                           // LED Pin. Although this is also the Rx pin
 #define   Vsense                      A2                                          // Voltage sensing (150ohm to 1K divider)
@@ -87,6 +86,11 @@ void Beep_Motors(unsigned long Frequency, unsigned long Duration);              
 char Get_Channel_From_EEPROM(char Read_Write, char New_Channel);                  // Writes or reads the current IR channel from/to EEPROM.
 void System_Power_Down(void);                                                     // Completely shuts down the GMC: Gyro, Motor drivers, IR receiver, LED, the arduino clock, all interrupts etc
 void Sleep_6050(void);                                                            // ALTHOUGH this function is in the main file "Robot_Wars_Gyro" or whatever, this needs referencing here
+void Configure_IO_Pins();
+void Configure_Timer1_For_PWM();
+float Circularly_Constrain(float Yaw_setpoint);
+void Update_Yaw(void);
+void PID_Tuning(int No_PWM_Signal);
 
 //--- Variables ------------------------------------------------------------------
 
